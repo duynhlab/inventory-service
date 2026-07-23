@@ -5,13 +5,10 @@ on:
     branches: [main]
     tags: ['v*']
 
+# Least privilege at the workflow level; jobs that push, sign, or read the
+# Actions API declare their own explicit permissions blocks below.
 permissions:
   contents: read
-  packages: write
-  pull-requests: read
-  id-token: write
-  actions: read
-  security-events: write
 
 jobs:
   go-check:
@@ -32,6 +29,11 @@ jobs:
   sonar:
     needs: [go-check, gitleaks]
     uses: duynhlab/gha-workflows/.github/workflows/sonarqube.yml@main
+    # sonarqube.yml declares contents:read + pull-requests:read on its job;
+    # the caller must grant at least that.
+    permissions:
+      contents: read
+      pull-requests: read
     with:
       project-key: 'duynhlab_${{ github.event.repository.name }}'
       organization: 'duynhlab'
@@ -97,6 +99,10 @@ jobs:
     if: always()
     needs: [go-check, gitleaks, sonar, docker-build, trivy-report, docker-sign, release-binary]
     uses: duynhlab/gha-workflows/.github/workflows/status.yml@main
+    # status.yml reads the workflow run + job results via the Actions API.
+    permissions:
+      contents: read
+      actions: read
     with:
       slack_channel_id: "C0AD82A9A74"
       gsheet_spreadsheet_id: "1F2VUrAOyMGnETApp5yA-ldCW81ConiQXnWYZVxKas_0"

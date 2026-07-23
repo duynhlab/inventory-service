@@ -63,6 +63,66 @@ func TestStockCommands(t *testing.T) {
 		}
 	})
 
+	t.Run("divergent replay of a claimed command_id conflicts without state change", func(t *testing.T) {
+		before := onHand("cmd-a")
+		moves := movements("cmd-a")
+
+		// Same command_id as rcv-1 but a different sku: must conflict, not
+		// silently report a no-op replay.
+		applied, err := repo.ReceiveStock(ctx, domain.StockCommand{
+			CommandID: "rcv-1", SKUID: "cmd-divergent", WarehouseID: wh, Quantity: 10, Actor: "test"})
+		if !errors.Is(err, domain.ErrCommandConflict) {
+			t.Fatalf("divergent sku replay = (%v, %v), want ErrCommandConflict", applied, err)
+		}
+
+		// Same command_id and sku but a different quantity (delta) also conflicts.
+		applied, err = repo.ReceiveStock(ctx, domain.StockCommand{
+			CommandID: "rcv-1", SKUID: "cmd-a", WarehouseID: wh, Quantity: 99, Actor: "test"})
+		if !errors.Is(err, domain.ErrCommandConflict) {
+			t.Fatalf("divergent quantity replay = (%v, %v), want ErrCommandConflict", applied, err)
+		}
+
+		if got := onHand("cmd-a"); got != before {
+			t.Fatalf("on_hand changed %d -> %d after conflicting replays", before, got)
+		}
+		if got := movements("cmd-a"); got != moves {
+			t.Fatalf("conflicting replay wrote a ledger row (%d -> %d)", moves, got)
+		}
+		var divergent int64
+		if err := pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM inventory_movements WHERE sku_id = 'cmd-divergent'`).Scan(&divergent); err != nil || divergent != 0 {
+			t.Fatalf("divergent sku ledger rows = (%d, %v), want 0", divergent, err)
+		}
+	})
+
+	t.Run("invalid identity fields are rejected before touching the ledger", func(t *testing.T) {
+		// Two DIFFERENT commands both missing CommandID: without validation
+		// the first would claim command_id '' and the second would be
+		// swallowed as its "replay". Both must be rejected instead.
+		first := domain.StockCommand{SKUID: "val-a", WarehouseID: wh, Quantity: 5, Actor: "test"}
+		second := domain.StockCommand{SKUID: "val-b", WarehouseID: wh, Quantity: 7, Actor: "test"}
+		if _, err := repo.ReceiveStock(ctx, first); err == nil {
+			t.Fatal("empty CommandID must be rejected")
+		}
+		if _, err := repo.ReceiveStock(ctx, second); err == nil {
+			t.Fatal("second empty-CommandID command must be rejected, not swallowed as a replay")
+		}
+		var n int64
+		if err := pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM inventory_movements WHERE sku_id IN ('val-a', 'val-b')`).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("rejected commands wrote ledger rows = (%d, %v), want 0", n, err)
+		}
+
+		if _, err := repo.AdjustOnHand(ctx, domain.StockCommand{
+			CommandID: "val-1", WarehouseID: wh, Quantity: 1, Actor: "test"}); err == nil {
+			t.Fatal("empty SKUID must be rejected")
+		}
+		if _, err := repo.SetSafetyStock(ctx, domain.StockCommand{
+			CommandID: "val-2", SKUID: "val-a", WarehouseID: 0, Quantity: 1, Actor: "test"}); err == nil {
+			t.Fatal("non-positive WarehouseID must be rejected")
+		}
+	})
+
 	t.Run("adjust applies signed delta and rejects invariant violations atomically", func(t *testing.T) {
 		if _, err := repo.AdjustOnHand(ctx, domain.StockCommand{
 			CommandID: "adj-1", SKUID: "cmd-a", WarehouseID: wh, Quantity: -3, Reason: "shrinkage", Actor: "test"}); err != nil {
@@ -115,12 +175,12 @@ func TestStockCommands(t *testing.T) {
 
 	t.Run("commands on missing balance rows fail cleanly", func(t *testing.T) {
 		if _, err := repo.AdjustOnHand(ctx, domain.StockCommand{
-			CommandID: "adj-ghost", SKUID: "ghost", WarehouseID: wh, Quantity: 1, Actor: "test"}); err == nil {
-			t.Fatal("adjust on missing balance must error")
+			CommandID: "adj-ghost", SKUID: "ghost", WarehouseID: wh, Quantity: 1, Actor: "test"}); !errors.Is(err, domain.ErrBalanceNotFound) {
+			t.Fatalf("adjust on missing balance = %v, want ErrBalanceNotFound", err)
 		}
 		if _, err := repo.SetSafetyStock(ctx, domain.StockCommand{
-			CommandID: "safe-ghost", SKUID: "ghost", WarehouseID: wh, Quantity: 1, Actor: "test"}); err == nil {
-			t.Fatal("set safety on missing balance must error")
+			CommandID: "safe-ghost", SKUID: "ghost", WarehouseID: wh, Quantity: 1, Actor: "test"}); !errors.Is(err, domain.ErrBalanceNotFound) {
+			t.Fatalf("set safety on missing balance = %v, want ErrBalanceNotFound", err)
 		}
 	})
 }

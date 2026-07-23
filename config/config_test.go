@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -13,6 +14,28 @@ func TestBuildDSN(t *testing.T) {
 	want := "postgresql://inventory:secret@localhost:5432/inventory?sslmode=disable"
 	if got := db.BuildDSN(); got != want {
 		t.Errorf("BuildDSN() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildDSN_EscapesCredentials(t *testing.T) {
+	// Dynamic/rotated secrets can contain DSN-reserved characters; they must
+	// round-trip through the URL instead of corrupting it.
+	db := &DatabaseConfig{
+		Host: "localhost", Port: "5432", Name: "inventory",
+		User: "inv@user", Password: "p@ss:w/rd?&", SSLMode: "require",
+	}
+	u, err := url.Parse(db.BuildDSN())
+	if err != nil {
+		t.Fatalf("BuildDSN() is not a parseable URL: %v", err)
+	}
+	if got := u.User.Username(); got != db.User {
+		t.Errorf("username round-trip = %q, want %q", got, db.User)
+	}
+	if got, _ := u.User.Password(); got != db.Password {
+		t.Errorf("password round-trip = %q, want %q", got, db.Password)
+	}
+	if got := u.Query().Get("sslmode"); got != "require" {
+		t.Errorf("sslmode = %q, want require", got)
 	}
 }
 
@@ -56,6 +79,7 @@ func TestLoad_Overrides(t *testing.T) {
 func validConfig() *Config {
 	c := &Config{}
 	c.Service = ServiceConfig{Name: "inventory", Port: "8080", Env: "production"}
+	c.GRPC = GRPCConfig{Port: "9090"}
 	c.Profiling = ProfilingConfig{Enabled: true, Endpoint: "pyro:4040", ServiceName: "inventory"}
 	c.Logging = LoggingConfig{Level: "info", Format: "json"}
 	c.Database = DatabaseConfig{} // Host empty → database validation skipped
@@ -73,6 +97,8 @@ func TestValidate(t *testing.T) {
 	}{
 		{"missing service name", func(c *Config) { c.Service.Name = "" }},
 		{"non-numeric port", func(c *Config) { c.Service.Port = "abc" }},
+		{"missing grpc port", func(c *Config) { c.GRPC.Port = "" }},
+		{"non-numeric grpc port", func(c *Config) { c.GRPC.Port = "abc" }},
 		{"invalid env", func(c *Config) { c.Service.Env = "qa" }},
 		{"profiling endpoint missing", func(c *Config) { c.Profiling.Endpoint = "" }},
 		{"invalid log level", func(c *Config) { c.Logging.Level = "trace" }},
@@ -84,6 +110,15 @@ func TestValidate(t *testing.T) {
 			c.Database.User = "u"
 			c.Database.Password = "p"
 			c.Database.Port = "x"
+			c.Database.SSLMode = "disable"
+		}},
+		{"db invalid sslmode", func(c *Config) {
+			c.Database.Host = "h"
+			c.Database.Name = "n"
+			c.Database.User = "u"
+			c.Database.Password = "p"
+			c.Database.Port = "5432"
+			c.Database.SSLMode = "allow-anything"
 		}},
 	}
 	for _, tt := range tests {
@@ -95,6 +130,16 @@ func TestValidate(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("every allowlisted sslmode passes", func(t *testing.T) {
+		for _, mode := range []string{"disable", "prefer", "require", "verify-ca", "verify-full"} {
+			c := validConfig()
+			c.Database = DatabaseConfig{Host: "h", Port: "5432", Name: "n", User: "u", Password: "p", SSLMode: mode}
+			if err := c.Validate(); err != nil {
+				t.Errorf("Validate() with sslmode=%s = %v, want nil", mode, err)
+			}
+		}
+	})
 }
 
 func TestIsDevelopmentProduction(t *testing.T) {

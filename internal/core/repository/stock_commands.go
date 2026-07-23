@@ -28,8 +28,11 @@ func NewStockCommandRepository(pool *pgxpool.Pool) *StockCommandRepository {
 var _ domain.StockCommander = (*StockCommandRepository)(nil)
 
 // claimCommand inserts the movement row for cmd. It returns false when the
-// command_id already exists (idempotent replay — the whole command becomes a
-// no-op) and the transaction should be rolled back without error.
+// command_id already exists AND the stored movement matches what this command
+// would have written (idempotent replay — the whole command becomes a no-op
+// and the transaction should be rolled back without error). A different
+// command reusing the key returns domain.ErrCommandConflict: silently
+// dropping it would tell the caller their divergent command applied.
 func claimCommand(ctx context.Context, tx pgx.Tx, cmd domain.StockCommand, movementType string, onHandDelta, reservedDelta int64) (bool, error) {
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO inventory_movements
@@ -40,7 +43,33 @@ func claimCommand(ctx context.Context, tx pgx.Tx, cmd domain.StockCommand, movem
 	if err != nil {
 		return false, fmt.Errorf("claim command %s: %w", cmd.CommandID, err)
 	}
-	return tag.RowsAffected() == 1, nil
+	if tag.RowsAffected() == 1 {
+		return true, nil
+	}
+
+	// The key is taken: read the stored movement inside the same transaction
+	// and compare it against the movement this command intended to write.
+	// reference_id/reason are nullable in the schema but always written as
+	// strings here, so COALESCE keeps the comparison well-defined.
+	var (
+		prevSKU, prevType, prevRef, prevReason  string
+		prevWarehouse, prevOnHand, prevReserved int64
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT sku_id, warehouse_id, type, on_hand_delta, reserved_delta,
+		       COALESCE(reference_id, ''), COALESCE(reason, '')
+		FROM inventory_movements
+		WHERE command_id = $1`, cmd.CommandID).
+		Scan(&prevSKU, &prevWarehouse, &prevType, &prevOnHand, &prevReserved, &prevRef, &prevReason)
+	if err != nil {
+		return false, fmt.Errorf("load claimed command %s: %w", cmd.CommandID, err)
+	}
+	if prevSKU != cmd.SKUID || prevWarehouse != cmd.WarehouseID || prevType != movementType ||
+		prevOnHand != onHandDelta || prevReserved != reservedDelta ||
+		prevRef != cmd.Actor || prevReason != cmd.Reason {
+		return false, fmt.Errorf("command %s: %w", cmd.CommandID, domain.ErrCommandConflict)
+	}
+	return false, nil
 }
 
 // run wraps the claim + apply steps in a transaction and normalizes the
@@ -85,6 +114,9 @@ func checkViolation(err error) error {
 }
 
 func (r *StockCommandRepository) ReceiveStock(ctx context.Context, cmd domain.StockCommand) (bool, error) {
+	if err := cmd.Validate(); err != nil {
+		return false, err
+	}
 	if cmd.Quantity <= 0 {
 		return false, fmt.Errorf("receive quantity must be > 0, got %d", cmd.Quantity)
 	}
@@ -105,6 +137,9 @@ func (r *StockCommandRepository) ReceiveStock(ctx context.Context, cmd domain.St
 }
 
 func (r *StockCommandRepository) AdjustOnHand(ctx context.Context, cmd domain.StockCommand) (bool, error) {
+	if err := cmd.Validate(); err != nil {
+		return false, err
+	}
 	if cmd.Quantity == 0 {
 		return false, errors.New("adjust delta must be non-zero")
 	}
@@ -118,13 +153,16 @@ func (r *StockCommandRepository) AdjustOnHand(ctx context.Context, cmd domain.St
 			return fmt.Errorf("adjust on_hand: %w", checkViolation(err))
 		}
 		if tag.RowsAffected() == 0 {
-			return fmt.Errorf("adjust on_hand: no balance row for sku %s in warehouse %d", cmd.SKUID, cmd.WarehouseID)
+			return fmt.Errorf("adjust on_hand: sku %s in warehouse %d: %w", cmd.SKUID, cmd.WarehouseID, domain.ErrBalanceNotFound)
 		}
 		return nil
 	})
 }
 
 func (r *StockCommandRepository) SetSafetyStock(ctx context.Context, cmd domain.StockCommand) (bool, error) {
+	if err := cmd.Validate(); err != nil {
+		return false, err
+	}
 	if cmd.Quantity < 0 {
 		return false, fmt.Errorf("safety stock must be >= 0, got %d", cmd.Quantity)
 	}
@@ -135,10 +173,14 @@ func (r *StockCommandRepository) SetSafetyStock(ctx context.Context, cmd domain.
 			WHERE sku_id = $1 AND warehouse_id = $2`,
 			cmd.SKUID, cmd.WarehouseID, cmd.Quantity)
 		if err != nil {
-			return fmt.Errorf("set safety stock: %w", checkViolation(err))
+			// No checkViolation mapping here: no CHECK involves safety_stock
+			// alone (the >= 0 case is rejected above), so a 23514 from this
+			// UPDATE would be a schema change this code doesn't know about —
+			// mislabelling it ErrInsufficientOnHand would hide that.
+			return fmt.Errorf("set safety stock: %w", err)
 		}
 		if tag.RowsAffected() == 0 {
-			return fmt.Errorf("set safety stock: no balance row for sku %s in warehouse %d", cmd.SKUID, cmd.WarehouseID)
+			return fmt.Errorf("set safety stock: sku %s in warehouse %d: %w", cmd.SKUID, cmd.WarehouseID, domain.ErrBalanceNotFound)
 		}
 		return nil
 	})
