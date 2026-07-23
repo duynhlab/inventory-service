@@ -23,6 +23,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -97,12 +98,19 @@ type DatabaseConfig struct {
 // app's connection pool use it, so they connect identically.
 func (c *DatabaseConfig) BuildDSN() string {
 	// Format: postgresql://user:password@host:port/dbname?sslmode=disable
-	hostPort := net.JoinHostPort(c.Host, c.Port)
+	// Built via net/url so credentials with reserved characters (rotated or
+	// dynamic secrets) are percent-encoded instead of corrupting the DSN.
 	// Pool sizing is applied on the parsed pgxpool.Config in database.Connect (not
 	// the DSN) so the migrate subcommand can share this exact DSN (its pgx stdlib
 	// driver rejects pool_* params).
-	return fmt.Sprintf("postgresql://%s:%s@%s/%s?sslmode=%s",
-		c.User, c.Password, hostPort, c.Name, c.SSLMode)
+	u := url.URL{
+		Scheme:   "postgresql",
+		User:     url.UserPassword(c.User, c.Password),
+		Host:     net.JoinHostPort(c.Host, c.Port),
+		Path:     "/" + c.Name,
+		RawQuery: url.Values{"sslmode": []string{c.SSLMode}}.Encode(),
+	}
+	return u.String()
 }
 
 // Load reads configuration from environment variables with defaults
@@ -156,6 +164,7 @@ func (c *Config) Validate() error {
 	var errs []string
 
 	errs = append(errs, c.validateService()...)
+	errs = append(errs, c.validateGRPC()...)
 	errs = append(errs, c.validateProfiling()...)
 	errs = append(errs, c.validateLogging()...)
 	errs = append(errs, c.validateDatabase()...)
@@ -181,6 +190,17 @@ func (c *Config) validateService() []string {
 	validEnvs := []string{"development", "dev", "staging", "stage", "production", "prod"}
 	if !contains(validEnvs, c.Service.Env) {
 		errs = append(errs, fmt.Sprintf("ENV must be one of %v, got: %s", validEnvs, c.Service.Env))
+	}
+	return errs
+}
+
+func (c *Config) validateGRPC() []string {
+	var errs []string
+	if c.GRPC.Port == "" {
+		errs = append(errs, "GRPC_PORT is required (e.g., '9090')")
+	}
+	if _, err := strconv.Atoi(c.GRPC.Port); err != nil {
+		errs = append(errs, "GRPC_PORT must be a valid number, got: "+c.GRPC.Port)
 	}
 	return errs
 }
@@ -230,6 +250,10 @@ func (c *Config) validateDatabase() []string {
 		if _, err := strconv.Atoi(c.Database.Port); err != nil {
 			errs = append(errs, "DB_PORT must be a valid number, got: "+c.Database.Port)
 		}
+	}
+	validSSLModes := []string{"disable", "prefer", "require", "verify-ca", "verify-full"}
+	if !contains(validSSLModes, c.Database.SSLMode) {
+		errs = append(errs, fmt.Sprintf("DB_SSLMODE must be one of %v, got: %s", validSSLModes, c.Database.SSLMode))
 	}
 	return errs
 }

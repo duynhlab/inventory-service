@@ -6,6 +6,7 @@ package domain
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 // Movement types recorded in the append-only ledger. They mirror the
@@ -30,6 +31,10 @@ var ErrCommandConflict = errors.New("command_id already applied with a different
 // by the schema CHECKs.
 var ErrInsufficientOnHand = errors.New("adjustment would violate balance invariants")
 
+// ErrBalanceNotFound is returned when a command targets a (sku, warehouse)
+// pair with no balance row — stock that was never received cannot be adjusted.
+var ErrBalanceNotFound = errors.New("no balance row for sku/warehouse")
+
 // StockCommand is an idempotent admin mutation of one (sku, warehouse)
 // balance. CommandID is the natural idempotency key: replaying the same
 // command is a no-op success; every applied command writes exactly one
@@ -44,6 +49,27 @@ type StockCommand struct {
 	Quantity int64
 	Reason   string
 	Actor    string
+}
+
+// Validate rejects commands whose identity fields cannot claim a movement row
+// correctly: an empty CommandID would make unrelated commands collide on the
+// idempotency key (the second silently swallowed as a "replay"), and the
+// length bounds mirror the schema varchar limits so oversized ids fail here
+// instead of as opaque errors mid-transaction.
+func (c StockCommand) Validate() error {
+	switch {
+	case c.CommandID == "":
+		return errors.New("command_id must not be empty")
+	case len(c.CommandID) > 255:
+		return fmt.Errorf("command_id must be <= 255 chars, got %d", len(c.CommandID))
+	case c.SKUID == "":
+		return errors.New("sku_id must not be empty")
+	case len(c.SKUID) > 64:
+		return fmt.Errorf("sku_id must be <= 64 chars, got %d", len(c.SKUID))
+	case c.WarehouseID <= 0:
+		return fmt.Errorf("warehouse_id must be > 0, got %d", c.WarehouseID)
+	}
+	return nil
 }
 
 // StockCommander is the admin-command port (RFC-0021 P1-3). Implementations

@@ -21,6 +21,8 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/duynhlab/inventory-service/config"
 	migrations "github.com/duynhlab/inventory-service/db/migrations"
@@ -45,14 +47,16 @@ func main() {
 	}
 	defer func() { _ = logger.Sync() }()
 
+	// Validate before dispatching anywhere: subcommands connect to the
+	// database too, so a bad config must fail fast for them as well.
+	if err := cfg.Validate(); err != nil {
+		panic("Configuration validation failed: " + err.Error())
+	}
+
 	// Subcommands (`migrate`, `seed`) run an embedded SQL set and exit; no args
 	// serves the app.
 	if len(os.Args) > 1 && runSubcommand(os.Args[1], cfg, logger) {
 		return
-	}
-
-	if err := cfg.Validate(); err != nil {
-		panic("Configuration validation failed: " + err.Error())
 	}
 
 	logger.Info("Service starting",
@@ -64,8 +68,9 @@ func main() {
 
 	pool, err := database.Connect(context.Background(), cfg)
 	if err != nil {
-		logger.Error("Failed to connect to database", zap.Error(err))
-		return
+		// Fatal (exit 1), not return: exiting 0 here would look like a clean
+		// shutdown to Kubernetes instead of a crash to restart and alert on.
+		logger.Fatal("Failed to connect to database", zap.Error(err))
 	}
 	defer pool.Close()
 	logger.Info("Database connection pool established")
@@ -121,11 +126,11 @@ func main() {
 	// Internal gRPC server — the service's only business API surface.
 	// HTTP :8080 carries operational endpoints (/health, /ready) only.
 	availabilitySvc := logicv1.NewAvailabilityService(repository.NewAvailabilityRepository(pool))
-	grpcSrv := startGRPC(cfg, logger, availabilitySvc)
+	grpcSrv, healthSrv := startGRPC(cfg, logger, availabilitySvc)
 
 	var isShuttingDown atomic.Bool
 	srv := setupServer(cfg, &isShuttingDown, pool)
-	runGracefulShutdown(cfg, srv, grpcSrv, tp, pool, logger, &isShuttingDown)
+	runGracefulShutdown(cfg, srv, grpcSrv, healthSrv, tp, pool, logger, &isShuttingDown)
 }
 
 // runSubcommand handles the `migrate` and `seed` subcommands. It returns true
@@ -145,9 +150,11 @@ func runSubcommand(cmd string, cfg *config.Config, logger *zap.Logger) bool {
 		logger.Info("Schema migrations applied")
 		return true
 	case "seed":
-		// Demo data is DEV-ONLY; refuse to seed a production database.
-		if cfg.IsProduction() {
-			logger.Fatal("seed refused in production — demo data is dev-only")
+		// Demo data is DEV-ONLY; only an explicitly-development environment
+		// may seed — staging and anything unrecognised are refused too, not
+		// just production.
+		if !cfg.IsDevelopment() {
+			logger.Fatal("seed refused — demo data is dev-only (ENV must be development)")
 		}
 		if err := applySeed(cfg); err != nil {
 			logger.Fatal("Demo seed failed", zap.Error(err))
@@ -205,33 +212,41 @@ func applySeed(cfg *config.Config) error {
 
 // startGRPC starts the internal gRPC server on cfg.GRPC.Port, serving
 // InventoryService alongside the HTTP listener (dual-port). gRPC is the
-// official east-west transport, so it always runs; it returns nil only if the
-// listener can't bind. The server uses the shared grpcx bootstrap
-// (OpenTelemetry, health, reflection).
-func startGRPC(cfg *config.Config, logger *zap.Logger, availability *logicv1.AvailabilityService) *grpc.Server {
+// service's ONLY business surface, so a pod that cannot serve it is useless:
+// bind or serve failure exits non-zero instead of leaving a Ready zombie
+// that answers /health while every RPC fails. The server uses the shared
+// grpcx bootstrap (OpenTelemetry, health, reflection); the returned
+// *health.Server lets shutdown flip NOT_SERVING before draining.
+func startGRPC(cfg *config.Config, logger *zap.Logger, availability *logicv1.AvailabilityService) (*grpc.Server, *health.Server) {
 	lc := net.ListenConfig{}
 	lis, err := lc.Listen(context.Background(), "tcp", ":"+cfg.GRPC.Port)
 	if err != nil {
-		logger.Error("Failed to listen for gRPC", zap.String("port", cfg.GRPC.Port), zap.Error(err))
-		return nil
+		logger.Fatal("Failed to listen for gRPC", zap.String("port", cfg.GRPC.Port), zap.Error(err))
 	}
 
-	grpcSrv, _ := grpcx.NewServer(logger)
+	grpcSrv, healthSrv := grpcx.NewServer(logger)
 	inventoryv1.RegisterInventoryServiceServer(grpcSrv, grpcv1.NewServer(availability, logger))
 
 	go func() {
 		logger.Info("Starting gRPC server", zap.String("port", cfg.GRPC.Port))
+		// Serve returns nil after Stop/GracefulStop, so Fatal only fires on a
+		// real serve failure.
 		if err := grpcSrv.Serve(lis); err != nil {
-			logger.Error("gRPC server error", zap.Error(err))
+			logger.Fatal("gRPC server error", zap.Error(err))
 		}
 	}()
 
-	return grpcSrv
+	return grpcSrv, healthSrv
 }
 
 func setupServer(cfg *config.Config, isShuttingDown *atomic.Bool, pool interface {
 	Ping(context.Context) error
 }) *http.Server {
+	// Gin defaults to debug mode; anything but development runs release mode
+	// so per-route debug banners stay out of production logs.
+	if !cfg.IsDevelopment() {
+		gin.SetMode(gin.ReleaseMode)
+	}
 	r := gin.Default()
 
 	r.GET("/health", func(c *gin.Context) {
@@ -258,6 +273,8 @@ func setupServer(cfg *config.Config, isShuttingDown *atomic.Bool, pool interface
 		Addr:              ":" + cfg.Service.Port,
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 }
 
@@ -265,6 +282,7 @@ func runGracefulShutdown(
 	cfg *config.Config,
 	srv *http.Server,
 	grpcSrv *grpc.Server,
+	healthSrv *health.Server,
 	tp interface{ Shutdown(context.Context) error },
 	pool interface{ Close() },
 	logger *zap.Logger,
@@ -284,6 +302,10 @@ func runGracefulShutdown(
 	logger.Info("Shutdown signal received")
 
 	isShuttingDown.Store(true)
+	// Flip the gRPC health status at the start of the drain so clients that
+	// watch the health service stop picking this instance while in-flight
+	// RPCs finish.
+	healthSrv.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 	drainDelay := cfg.GetReadinessDrainDelayDuration()
 	if drainDelay > 0 {
 		logger.Info("Readiness drain delay started", zap.Duration("delay", drainDelay))
@@ -302,9 +324,21 @@ func runGracefulShutdown(
 		logger.Info("HTTP server shutdown complete")
 	}
 
-	if grpcSrv != nil {
+	// GracefulStop waits for in-flight RPCs but has no deadline of its own; a
+	// stuck stream would block past the pod's terminationGracePeriod, so fall
+	// back to a hard Stop after 10s.
+	stopped := make(chan struct{})
+	go func() {
 		grpcSrv.GracefulStop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
 		logger.Info("gRPC server shutdown complete")
+	case <-time.After(10 * time.Second):
+		grpcSrv.Stop()
+		<-stopped
+		logger.Warn("gRPC server force-stopped after graceful timeout")
 	}
 
 	pool.Close()
