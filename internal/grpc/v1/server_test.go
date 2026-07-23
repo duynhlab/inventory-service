@@ -35,7 +35,7 @@ func (s *availabilityStub) CheckAvailability(_ context.Context, items []logicv1.
 }
 
 func newTestServer(stub *availabilityStub) *Server {
-	return NewServer(stub, zap.NewNop())
+	return NewServer(stub, nil, zap.NewNop())
 }
 
 // wantValidationError asserts the grpcx VALIDATION_ERROR contract: callers

@@ -52,6 +52,18 @@ func TestStockCommands(t *testing.T) {
 		if got := movements("cmd-a"); got != 1 {
 			t.Fatalf("movement rows = %d, want exactly 1", got)
 		}
+		// Admin commands record the principal in actor (migration 000003);
+		// reference_id is reserved for reservation-driven movements.
+		var actor string
+		var refID *string
+		if err := pool.QueryRow(ctx,
+			`SELECT COALESCE(actor, ''), reference_id FROM inventory_movements WHERE command_id = 'rcv-1'`).
+			Scan(&actor, &refID); err != nil {
+			t.Fatalf("read movement actor: %v", err)
+		}
+		if actor != "test" || refID != nil {
+			t.Fatalf("movement actor = %q, reference_id = %v; want actor=test, reference_id NULL", actor, refID)
+		}
 
 		applied, err = repo.ReceiveStock(ctx, domain.StockCommand{
 			CommandID: "rcv-2", SKUID: "cmd-a", WarehouseID: wh, Quantity: 5, Actor: "test"})
