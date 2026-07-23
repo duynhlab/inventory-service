@@ -1,0 +1,7 @@
+-- =============================================================================
+-- Inventory Service - Seed Data
+-- =============================================================================
+-- Placeholder seed (RFC-0021 P1-1): demo stock/reservations arrive with the
+-- P1-2 schema. This file must stay a no-op so the `seed` subcommand runs
+-- cleanly on the bootstrap skeleton.
+-- =============================================================================

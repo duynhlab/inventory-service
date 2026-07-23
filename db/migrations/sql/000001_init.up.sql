@@ -1,0 +1,4 @@
+-- Inventory Database Schema - Initial Setup
+-- Placeholder migration (RFC-0021 P1-1): the inventory schema (stock levels,
+-- reservations, movements) lands in P1-2. This file must stay a no-op so the
+-- `migrate` subcommand runs cleanly on the bootstrap skeleton.
