@@ -26,7 +26,9 @@ import (
 	migrations "github.com/duynhlab/inventory-service/db/migrations"
 	seed "github.com/duynhlab/inventory-service/db/seed"
 	database "github.com/duynhlab/inventory-service/internal/core"
+	"github.com/duynhlab/inventory-service/internal/core/repository"
 	grpcv1 "github.com/duynhlab/inventory-service/internal/grpc/v1"
+	logicv1 "github.com/duynhlab/inventory-service/internal/logic/v1"
 	"github.com/duynhlab/pkg/grpcx"
 	"github.com/duynhlab/pkg/logger/zapx"
 	"github.com/duynhlab/pkg/migratex"
@@ -118,7 +120,8 @@ func main() {
 
 	// Internal gRPC server — the service's only business API surface.
 	// HTTP :8080 carries operational endpoints (/health, /ready) only.
-	grpcSrv := startGRPC(cfg, logger)
+	availabilitySvc := logicv1.NewAvailabilityService(repository.NewAvailabilityRepository(pool))
+	grpcSrv := startGRPC(cfg, logger, availabilitySvc)
 
 	var isShuttingDown atomic.Bool
 	srv := setupServer(cfg, &isShuttingDown, pool)
@@ -205,7 +208,7 @@ func applySeed(cfg *config.Config) error {
 // official east-west transport, so it always runs; it returns nil only if the
 // listener can't bind. The server uses the shared grpcx bootstrap
 // (OpenTelemetry, health, reflection).
-func startGRPC(cfg *config.Config, logger *zap.Logger) *grpc.Server {
+func startGRPC(cfg *config.Config, logger *zap.Logger, availability *logicv1.AvailabilityService) *grpc.Server {
 	lc := net.ListenConfig{}
 	lis, err := lc.Listen(context.Background(), "tcp", ":"+cfg.GRPC.Port)
 	if err != nil {
@@ -214,7 +217,7 @@ func startGRPC(cfg *config.Config, logger *zap.Logger) *grpc.Server {
 	}
 
 	grpcSrv, _ := grpcx.NewServer(logger)
-	inventoryv1.RegisterInventoryServiceServer(grpcSrv, grpcv1.NewServer())
+	inventoryv1.RegisterInventoryServiceServer(grpcSrv, grpcv1.NewServer(availability, logger))
 
 	go func() {
 		logger.Info("Starting gRPC server", zap.String("port", cfg.GRPC.Port))
