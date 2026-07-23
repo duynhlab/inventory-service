@@ -36,7 +36,7 @@ var _ domain.StockCommander = (*StockCommandRepository)(nil)
 func claimCommand(ctx context.Context, tx pgx.Tx, cmd domain.StockCommand, movementType string, onHandDelta, reservedDelta int64) (bool, error) {
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO inventory_movements
-			(command_id, sku_id, warehouse_id, type, on_hand_delta, reserved_delta, reference_type, reference_id, reason)
+			(command_id, sku_id, warehouse_id, type, on_hand_delta, reserved_delta, reference_type, actor, reason)
 		VALUES ($1, $2, $3, $4, $5, $6, 'admin', $7, $8)
 		ON CONFLICT (command_id) DO NOTHING`,
 		cmd.CommandID, cmd.SKUID, cmd.WarehouseID, movementType, onHandDelta, reservedDelta, cmd.Actor, cmd.Reason)
@@ -49,24 +49,24 @@ func claimCommand(ctx context.Context, tx pgx.Tx, cmd domain.StockCommand, movem
 
 	// The key is taken: read the stored movement inside the same transaction
 	// and compare it against the movement this command intended to write.
-	// reference_id/reason are nullable in the schema but always written as
-	// strings here, so COALESCE keeps the comparison well-defined.
+	// actor/reason are nullable in the schema but always written as strings
+	// here, so COALESCE keeps the comparison well-defined.
 	var (
-		prevSKU, prevType, prevRef, prevReason  string
-		prevWarehouse, prevOnHand, prevReserved int64
+		prevSKU, prevType, prevActor, prevReason string
+		prevWarehouse, prevOnHand, prevReserved  int64
 	)
 	err = tx.QueryRow(ctx, `
 		SELECT sku_id, warehouse_id, type, on_hand_delta, reserved_delta,
-		       COALESCE(reference_id, ''), COALESCE(reason, '')
+		       COALESCE(actor, ''), COALESCE(reason, '')
 		FROM inventory_movements
 		WHERE command_id = $1`, cmd.CommandID).
-		Scan(&prevSKU, &prevWarehouse, &prevType, &prevOnHand, &prevReserved, &prevRef, &prevReason)
+		Scan(&prevSKU, &prevWarehouse, &prevType, &prevOnHand, &prevReserved, &prevActor, &prevReason)
 	if err != nil {
 		return false, fmt.Errorf("load claimed command %s: %w", cmd.CommandID, err)
 	}
 	if prevSKU != cmd.SKUID || prevWarehouse != cmd.WarehouseID || prevType != movementType ||
 		prevOnHand != onHandDelta || prevReserved != reservedDelta ||
-		prevRef != cmd.Actor || prevReason != cmd.Reason {
+		prevActor != cmd.Actor || prevReason != cmd.Reason {
 		return false, fmt.Errorf("command %s: %w", cmd.CommandID, domain.ErrCommandConflict)
 	}
 	return false, nil

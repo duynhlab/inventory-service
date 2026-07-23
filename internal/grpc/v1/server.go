@@ -3,9 +3,8 @@
 // share the same business rules.
 //
 // RFC-0021 P1-4 implements the two read RPCs (BatchGetAvailability,
-// CheckAvailability); the four write RPCs (Reserve, Release, Commit,
-// GetReservation) still answer codes.Unimplemented via the embedded
-// UnimplementedInventoryServiceServer until P1-5.
+// CheckAvailability); P1-5 adds the four write RPCs (Reserve, Release,
+// Commit, GetReservation) — the full InventoryService surface is served.
 package v1
 
 import (
@@ -41,13 +40,14 @@ type Server struct {
 	inventoryv1.UnimplementedInventoryServiceServer
 
 	availability Availability
+	reservations Reservations
 	logger       *zap.Logger
 }
 
 // NewServer creates the gRPC InventoryService server backed by the
-// availability logic service.
-func NewServer(availability Availability, logger *zap.Logger) *Server {
-	return &Server{availability: availability, logger: logger}
+// availability and reservation logic services.
+func NewServer(availability Availability, reservations Reservations, logger *zap.Logger) *Server {
+	return &Server{availability: availability, reservations: reservations, logger: logger}
 }
 
 // failClosed translates a logic-layer failure into a wire status. The real
@@ -59,7 +59,7 @@ func (s *Server) failClosed(rpc string, err error) error {
 	if errors.Is(err, context.Canceled) {
 		return status.Error(codes.Canceled, "request canceled")
 	}
-	s.logger.Error("Availability lookup failed", zap.String("rpc", rpc), zap.Error(err))
+	s.logger.Error("Inventory RPC failed", zap.String("rpc", rpc), zap.Error(err))
 	// A storage failure is retryable for callers — never a business "no".
 	return grpcx.ErrorWithReason(codes.Unavailable, grpcx.ReasonDependencyUnavailable,
 		rpc+" failed", nil)

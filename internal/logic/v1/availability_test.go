@@ -7,9 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
@@ -188,11 +186,18 @@ func TestAvailabilityService_CheckAvailability(t *testing.T) {
 	})
 
 	t.Run("canceled context is not counted as an error outcome", func(t *testing.T) {
-		// A manual reader replaces the global no-op provider so the package's
-		// delegating instrument becomes observable within this subtest.
-		reader := sdkmetric.NewManualReader()
-		otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+		// The shared reader (TestMain) accumulates across the whole package
+		// run, so assert the DELTA this subtest produces: one counted error
+		// (db down) and zero for the canceled call.
 		ctx := context.Background()
+		collect := func() int64 {
+			var rm metricdata.ResourceMetrics
+			if err := testMetricReader.Collect(ctx, &rm); err != nil {
+				t.Fatalf("collect metrics: %v", err)
+			}
+			return errorOutcomeCount(rm)
+		}
+		before := collect()
 
 		canceled := NewAvailabilityService(&fakeAvailabilityRepo{
 			err: fmt.Errorf("query: %w", context.Canceled),
@@ -205,12 +210,8 @@ func TestAvailabilityService_CheckAvailability(t *testing.T) {
 			t.Fatal("got nil error, want repository error")
 		}
 
-		var rm metricdata.ResourceMetrics
-		if err := reader.Collect(ctx, &rm); err != nil {
-			t.Fatalf("collect metrics: %v", err)
-		}
-		if got := errorOutcomeCount(rm); got != 1 {
-			t.Errorf("outcome=error count = %d, want 1 (canceled call must not count)", got)
+		if got := collect() - before; got != 1 {
+			t.Errorf("outcome=error delta = %d, want 1 (canceled call must not count)", got)
 		}
 	})
 }

@@ -68,6 +68,8 @@ func (c StockCommand) Validate() error {
 		return fmt.Errorf("sku_id must be <= 64 chars, got %d", len(c.SKUID))
 	case c.WarehouseID <= 0:
 		return fmt.Errorf("warehouse_id must be > 0, got %d", c.WarehouseID)
+	case len(c.Actor) > 64:
+		return fmt.Errorf("actor must be <= 64 chars, got %d", len(c.Actor))
 	}
 	return nil
 }

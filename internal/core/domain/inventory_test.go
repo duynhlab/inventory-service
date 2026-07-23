@@ -32,6 +32,7 @@ func TestStockCommandValidate(t *testing.T) {
 		{"oversized sku id", func(c *domain.StockCommand) { c.SKUID = strings.Repeat("x", 65) }, "sku_id"},
 		{"zero warehouse id", func(c *domain.StockCommand) { c.WarehouseID = 0 }, "warehouse_id"},
 		{"negative warehouse id", func(c *domain.StockCommand) { c.WarehouseID = -1 }, "warehouse_id"},
+		{"oversized actor", func(c *domain.StockCommand) { c.Actor = strings.Repeat("x", 65) }, "actor"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -51,6 +52,7 @@ func TestStockCommandValidate(t *testing.T) {
 		c := validCommand()
 		c.CommandID = strings.Repeat("x", 255)
 		c.SKUID = strings.Repeat("x", 64)
+		c.Actor = strings.Repeat("x", 64)
 		if err := c.Validate(); err != nil {
 			t.Errorf("Validate() at schema max lengths = %v, want nil", err)
 		}

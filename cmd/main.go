@@ -126,7 +126,8 @@ func main() {
 	// Internal gRPC server — the service's only business API surface.
 	// HTTP :8080 carries operational endpoints (/health, /ready) only.
 	availabilitySvc := logicv1.NewAvailabilityService(repository.NewAvailabilityRepository(pool))
-	grpcSrv, healthSrv := startGRPC(cfg, logger, availabilitySvc)
+	reservationSvc := logicv1.NewReservationService(repository.NewReservationRepository(pool))
+	grpcSrv, healthSrv := startGRPC(cfg, logger, availabilitySvc, reservationSvc)
 
 	var isShuttingDown atomic.Bool
 	srv := setupServer(cfg, &isShuttingDown, pool)
@@ -217,7 +218,12 @@ func applySeed(cfg *config.Config) error {
 // that answers /health while every RPC fails. The server uses the shared
 // grpcx bootstrap (OpenTelemetry, health, reflection); the returned
 // *health.Server lets shutdown flip NOT_SERVING before draining.
-func startGRPC(cfg *config.Config, logger *zap.Logger, availability *logicv1.AvailabilityService) (*grpc.Server, *health.Server) {
+func startGRPC(
+	cfg *config.Config,
+	logger *zap.Logger,
+	availability *logicv1.AvailabilityService,
+	reservations *logicv1.ReservationService,
+) (*grpc.Server, *health.Server) {
 	lc := net.ListenConfig{}
 	lis, err := lc.Listen(context.Background(), "tcp", ":"+cfg.GRPC.Port)
 	if err != nil {
@@ -225,7 +231,7 @@ func startGRPC(cfg *config.Config, logger *zap.Logger, availability *logicv1.Ava
 	}
 
 	grpcSrv, healthSrv := grpcx.NewServer(logger)
-	inventoryv1.RegisterInventoryServiceServer(grpcSrv, grpcv1.NewServer(availability, logger))
+	inventoryv1.RegisterInventoryServiceServer(grpcSrv, grpcv1.NewServer(availability, reservations, logger))
 
 	go func() {
 		logger.Info("Starting gRPC server", zap.String("port", cfg.GRPC.Port))
@@ -266,8 +272,8 @@ func setupServer(cfg *config.Config, isShuttingDown *atomic.Bool, pool interface
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	// No business HTTP routes: inventory is gRPC-only east-west (RFC-0021).
-	// P1-3..P1-5 add the InventoryService RPC implementations.
+	// No business HTTP routes: inventory is gRPC-only east-west (RFC-0021);
+	// the full InventoryService surface is served on the gRPC port.
 
 	return &http.Server{
 		Addr:              ":" + cfg.Service.Port,
