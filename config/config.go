@@ -21,6 +21,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -111,6 +112,39 @@ func (c *DatabaseConfig) BuildDSN() string {
 		RawQuery: url.Values{"sslmode": []string{c.SSLMode}}.Encode(),
 	}
 	return u.String()
+}
+
+// ProductDBDSN builds the READ-ONLY product-service database DSN used by the
+// `backfill` subcommand (RFC-0021 P2-2). PRODUCT_DB_DSN wins when set;
+// otherwise the DSN is assembled from
+// PRODUCT_DB_{HOST,PORT,NAME,USER,PASSWORD,SSLMODE} (built via net/url so
+// rotated/dynamic credentials with reserved characters are percent-encoded).
+// The product credentials and read-only grant are provisioned separately
+// (P2-3) — the backfill only needs the connection params. Returns an error
+// when neither form yields a host and database name so a misconfigured run
+// fails fast instead of connecting to nothing.
+//
+// SSL defaults to `require`: these are cross-tenant credentials reaching into
+// another service's database (RFC-0020 direction), so transport encryption is
+// the safe default. Local dev must opt out explicitly with
+// PRODUCT_DB_SSLMODE=disable.
+func ProductDBDSN() (string, error) {
+	if dsn := os.Getenv("PRODUCT_DB_DSN"); dsn != "" {
+		return dsn, nil
+	}
+	host := os.Getenv("PRODUCT_DB_HOST")
+	name := os.Getenv("PRODUCT_DB_NAME")
+	if host == "" || name == "" {
+		return "", errors.New("product DB not configured: set PRODUCT_DB_DSN, or PRODUCT_DB_HOST and PRODUCT_DB_NAME")
+	}
+	u := url.URL{
+		Scheme:   "postgresql",
+		User:     url.UserPassword(os.Getenv("PRODUCT_DB_USER"), os.Getenv("PRODUCT_DB_PASSWORD")),
+		Host:     net.JoinHostPort(host, getEnv("PRODUCT_DB_PORT", "5432")),
+		Path:     "/" + name,
+		RawQuery: url.Values{"sslmode": []string{getEnv("PRODUCT_DB_SSLMODE", "require")}}.Encode(),
+	}
+	return u.String(), nil
 }
 
 // Load reads configuration from environment variables with defaults
