@@ -136,14 +136,16 @@ func main() {
 	runGracefulShutdown(cfg, srv, grpcSrv, healthSrv, tp, pool, logger, &isShuttingDown)
 }
 
-// runSubcommand handles the `migrate` and `seed` subcommands. It returns true
-// when a subcommand was recognised and executed (the caller then exits), or
-// false to fall through to serving the app.
+// runSubcommand handles the `migrate`, `seed`, and `backfill` subcommands. It
+// returns true when a subcommand was recognised and executed (the caller then
+// exits), or false to fall through to serving the app.
 //
 // `migrate` applies the versioned schema migrations and runs in every
 // environment (init container, direct DB host). `seed` applies DEV-ONLY demo
 // data and is invoked explicitly — never by `migrate` or the serve path — so
-// production databases are never seeded.
+// production databases are never seeded. `backfill` migrates stock from
+// product-service into inventory_balances (RFC-0021 P2-2) and is dry-run by
+// default.
 func runSubcommand(cmd string, cfg *config.Config, logger *zap.Logger) bool {
 	switch cmd {
 	case "migrate":
@@ -163,6 +165,14 @@ func runSubcommand(cmd string, cfg *config.Config, logger *zap.Logger) bool {
 			logger.Fatal("Demo seed failed", zap.Error(err))
 		}
 		logger.Info("Demo seed data applied")
+		return true
+	case "backfill":
+		// Phase-2 migration of stock from product into inventory_balances
+		// (RFC-0021 P2-2). Dry-run by default; --apply/BACKFILL_APPLY=true to
+		// write. A mismatch or DB error exits non-zero.
+		if err := runBackfill(cfg, logger, os.Args[2:]); err != nil {
+			logger.Fatal("Backfill failed", zap.Error(err))
+		}
 		return true
 	default:
 		return false
