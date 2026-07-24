@@ -87,8 +87,12 @@ func NewAvailabilityService(repo AvailabilityReader) *AvailabilityService {
 // nothing is promisable; untracked → UNKNOWN with ATP 0, because inventory
 // cannot answer for an id it has never seen.
 func (s *AvailabilityService) BatchGetAvailability(ctx context.Context, skuIDs []string) ([]SkuAvailability, error) {
+	ctx, span := startLogicSpan(ctx, opBatchAvailability)
+	defer span.End()
+
 	atps, err := s.repo.BatchATP(ctx, skuIDs)
 	if err != nil {
+		recordSpanError(ctx, opBatchAvailability, err)
 		return nil, fmt.Errorf("batch get availability: %w", err)
 	}
 
@@ -103,6 +107,7 @@ func (s *AvailabilityService) BatchGetAvailability(ctx context.Context, skuIDs [
 	tracked := map[string]bool{}
 	if len(missing) > 0 {
 		if tracked, err = s.repo.TrackedSKUs(ctx, missing); err != nil {
+			recordSpanError(ctx, opBatchAvailability, err)
 			return nil, fmt.Errorf("batch get availability: %w", err)
 		}
 	}
@@ -119,6 +124,7 @@ func (s *AvailabilityService) BatchGetAvailability(ctx context.Context, skuIDs [
 			out = append(out, SkuAvailability{SKUID: id, Status: StatusUnknown})
 		}
 	}
+	setSpanOutcome(ctx, outcomeOK)
 	return out, nil
 }
 
@@ -146,6 +152,9 @@ func statusFor(atp int64) AvailabilityStatus {
 // the basket is unfulfillable by definition: can_fulfill false with every
 // line short at ATP 0.
 func (s *AvailabilityService) CheckAvailability(ctx context.Context, items []CheckItem) (*CheckResult, error) {
+	ctx, span := startLogicSpan(ctx, opCheckAvailability)
+	defer span.End()
+
 	skuIDs := make([]string, 0, len(items))
 	for _, it := range items {
 		skuIDs = append(skuIDs, it.SKUID)
@@ -155,16 +164,19 @@ func (s *AvailabilityService) CheckAvailability(ctx context.Context, items []Che
 	if err != nil {
 		// A canceled request is the caller hanging up, not a check outcome —
 		// counting it as error would let client churn masquerade as DB
-		// trouble on the on-call dashboard.
+		// trouble on the on-call dashboard. recordSpanError applies the same
+		// canceled skip to the span.
 		if !errors.Is(err, context.Canceled) {
 			recordCheck(ctx, outcomeError)
 		}
+		recordSpanError(ctx, opCheckAvailability, err)
 		return nil, fmt.Errorf("check availability: %w", err)
 	}
 
 	for _, id := range activeIDs {
 		if fulfills(byWarehouse[id], items) {
 			recordCheck(ctx, outcomeFulfillable)
+			setSpanOutcome(ctx, outcomeFulfillable)
 			return &CheckResult{CanFulfill: true}, nil
 		}
 	}
@@ -181,6 +193,7 @@ func (s *AvailabilityService) CheckAvailability(ctx context.Context, items []Che
 		}
 	}
 	recordCheck(ctx, outcomeShortage)
+	setSpanOutcome(ctx, outcomeShortage)
 	return &CheckResult{Shortages: shortages}, nil
 }
 

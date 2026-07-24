@@ -31,6 +31,7 @@ import (
 	"github.com/duynhlab/inventory-service/internal/core/repository"
 	grpcv1 "github.com/duynhlab/inventory-service/internal/grpc/v1"
 	logicv1 "github.com/duynhlab/inventory-service/internal/logic/v1"
+	"github.com/duynhlab/inventory-service/middleware"
 	"github.com/duynhlab/pkg/grpcx"
 	"github.com/duynhlab/pkg/logger/zapx"
 	"github.com/duynhlab/pkg/migratex"
@@ -80,6 +81,7 @@ func main() {
 	// logs behind OTEL_LOGS_ENABLED. The config is built once so the startup
 	// log reflects the values obsx actually uses.
 	otelCfg := obsx.ConfigFromEnv()
+	middleware.SetServiceName(otelCfg.ServiceName)
 	var tp interface{ Shutdown(context.Context) error }
 	obs, err := obsx.SetupObservability(context.Background(), otelCfg)
 	if err != nil {
@@ -126,7 +128,7 @@ func main() {
 	// Internal gRPC server — the service's only business API surface.
 	// HTTP :8080 carries operational endpoints (/health, /ready) only.
 	availabilitySvc := logicv1.NewAvailabilityService(repository.NewAvailabilityRepository(pool))
-	reservationSvc := logicv1.NewReservationService(repository.NewReservationRepository(pool))
+	reservationSvc := logicv1.NewReservationService(repository.NewReservationRepository(pool), logicv1.WithLogger(logger))
 	grpcSrv, healthSrv := startGRPC(cfg, logger, availabilitySvc, reservationSvc)
 
 	var isShuttingDown atomic.Bool
