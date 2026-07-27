@@ -3,7 +3,9 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /app/inventory-service ./cmd/main.go
+# Build the whole cmd package (not just main.go) — cmd/ now has sibling files
+# (backfill.go) that main.go's subcommand dispatch depends on.
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/inventory-service ./cmd
 
 FROM alpine:3.22
 RUN apk upgrade --no-cache && apk --no-cache add ca-certificates \
