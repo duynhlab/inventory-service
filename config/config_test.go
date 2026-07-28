@@ -276,3 +276,72 @@ func TestValidateErrorMentionsField(t *testing.T) {
 		t.Errorf("expected error mentioning SERVICE_NAME, got %v", err)
 	}
 }
+
+// A subcommand (`migrate`, `seed`, `backfill`) runs an embedded SQL set against
+// the database and exits. It never serves HTTP or gRPC, and the mop chart's
+// init container deliberately passes only DB_* env — the same contract every
+// other service on the platform runs under. So subcommand validation must cover
+// the database and nothing else; requiring SERVICE_NAME/PORT/GRPC_PORT there
+// crash-loops the init container.
+func TestValidateForSubcommand_NeedsOnlyDatabaseConfig(t *testing.T) {
+	cfg := &Config{}
+	cfg.Database = DatabaseConfig{
+		Host: "product-db-rw.product.svc.cluster.local", Port: "5432",
+		Name: "inventory", User: "inventory", Password: "secret", SSLMode: "require",
+	}
+
+	if err := cfg.ValidateForSubcommand(); err != nil {
+		t.Fatalf("ValidateForSubcommand() with DB config only = %v, want nil", err)
+	}
+	// The serving path still demands the rest, so the two must not be the same
+	// check — otherwise scoping the subcommand would weaken the server.
+	if err := cfg.Validate(); err == nil {
+		t.Error("Validate() = nil for a config with no service name; want an error")
+	}
+}
+
+func TestValidateForSubcommand_RejectsBadDatabaseConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		mut  func(*Config)
+	}{
+		{"missing name", func(c *Config) { c.Database.Name = "" }},
+		{"missing user", func(c *Config) { c.Database.User = "" }},
+		{"missing password", func(c *Config) { c.Database.Password = "" }},
+		{"non-numeric port", func(c *Config) { c.Database.Port = "x" }},
+		{"invalid sslmode", func(c *Config) { c.Database.SSLMode = "maybe" }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{}
+			cfg.Database = DatabaseConfig{
+				Host: "h", Port: "5432", Name: "inventory",
+				User: "inventory", Password: "secret", SSLMode: "require",
+			}
+			tt.mut(cfg)
+
+			if err := cfg.ValidateForSubcommand(); err == nil {
+				t.Errorf("ValidateForSubcommand() = nil for %s; want an error", tt.name)
+			}
+		})
+	}
+}
+
+// DB_HOST unset must be an error for a subcommand even though Validate treats
+// it as "no database configured" — a migration with no host is never valid.
+func TestValidateForSubcommand_RequiresHost(t *testing.T) {
+	cfg := &Config{}
+	cfg.Database = DatabaseConfig{
+		Port: "5432", Name: "inventory", User: "inventory",
+		Password: "secret", SSLMode: "require",
+	}
+
+	err := cfg.ValidateForSubcommand()
+	if err == nil {
+		t.Fatal("ValidateForSubcommand() = nil with no DB_HOST; want an error")
+	}
+	if !strings.Contains(err.Error(), "DB_HOST") {
+		t.Errorf("error %q does not name DB_HOST", err.Error())
+	}
+}

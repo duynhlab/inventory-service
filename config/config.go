@@ -210,6 +210,31 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// ValidateForSubcommand validates only what a `migrate`, `seed` or `backfill`
+// run needs: the database. Those subcommands apply an embedded SQL set and
+// exit — they never serve HTTP or gRPC — and the mop chart's init container
+// passes only DB_* env, the same contract every other service on the platform
+// runs under. Demanding SERVICE_NAME/PORT/GRPC_PORT here crash-loops the init
+// container instead of running the migration.
+//
+// DB_HOST is required rather than optional (Validate treats an unset host as
+// "no database configured"): a subcommand with no host would otherwise get past
+// validation and fail later inside the driver with a far less obvious message.
+func (c *Config) ValidateForSubcommand() error {
+	var errs []string
+
+	if c.Database.Host == "" {
+		errs = append(errs, "DB_HOST is required (subcommands connect to the database)")
+	}
+	errs = append(errs, c.validateDatabase()...)
+
+	if len(errs) > 0 {
+		return fmt.Errorf("configuration validation failed:\n  - %s", strings.Join(errs, "\n  - "))
+	}
+
+	return nil
+}
+
 func (c *Config) validateService() []string {
 	var errs []string
 	if c.Service.Name == "" || c.Service.Name == defaultServiceName {
