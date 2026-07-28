@@ -32,8 +32,17 @@ func newTestDB(t *testing.T) *pgxpool.Pool {
 		postgres.WithDatabase("inventory"),
 		postgres.WithUsername("inventory"),
 		postgres.WithPassword("secret"),
+		// The postgres image starts the server TWICE: once temporarily to run the
+		// init scripts that create this database and user, then it shuts that
+		// down and starts for real. Waiting only for the port to listen can
+		// therefore succeed against the temporary server, and the first query
+		// lands right as it shuts down — "connection reset by peer", seen in CI.
+		// Wait for the readiness line the SECOND time, which is the module's own
+		// default and the pattern order/checkout/payment/cart already use.
 		testcontainers.WithWaitStrategy(
-			wait.ForListeningPort("5432/tcp").WithStartupTimeout(90*time.Second),
+			wait.ForLog("database system is ready to accept connections").
+				WithOccurrence(2).
+				WithStartupTimeout(90*time.Second),
 		),
 	)
 	if err != nil {
