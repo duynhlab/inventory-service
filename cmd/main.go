@@ -48,16 +48,22 @@ func main() {
 	}
 	defer func() { _ = logger.Sync() }()
 
-	// Validate before dispatching anywhere: subcommands connect to the
-	// database too, so a bad config must fail fast for them as well.
-	if err := cfg.Validate(); err != nil {
-		panic("Configuration validation failed: " + err.Error())
+	// Subcommands (`migrate`, `seed`, `backfill`) run an embedded SQL set and
+	// exit; no args serves the app. They still fail fast on a bad config, but
+	// only on the part they use: the mop chart's init container passes DB_* env
+	// alone, so validating the serving config here would crash-loop it.
+	if len(os.Args) > 1 {
+		if err := cfg.ValidateForSubcommand(); err != nil {
+			panic("Configuration validation failed: " + err.Error())
+		}
+		if runSubcommand(os.Args[1], cfg, logger) {
+			return
+		}
 	}
 
-	// Subcommands (`migrate`, `seed`) run an embedded SQL set and exit; no args
-	// serves the app.
-	if len(os.Args) > 1 && runSubcommand(os.Args[1], cfg, logger) {
-		return
+	// The serving path needs everything.
+	if err := cfg.Validate(); err != nil {
+		panic("Configuration validation failed: " + err.Error())
 	}
 
 	logger.Info("Service starting",
