@@ -39,69 +39,6 @@ func TestBuildDSN_EscapesCredentials(t *testing.T) {
 	}
 }
 
-func TestProductDBDSN_ExplicitDSNWins(t *testing.T) {
-	t.Setenv("PRODUCT_DB_DSN", "postgresql://p:s@phost:5432/product?sslmode=require")
-	t.Setenv("PRODUCT_DB_HOST", "ignored")
-	got, err := ProductDBDSN()
-	if err != nil {
-		t.Fatalf("ProductDBDSN() error: %v", err)
-	}
-	if got != "postgresql://p:s@phost:5432/product?sslmode=require" {
-		t.Errorf("ProductDBDSN() = %q, want the explicit DSN", got)
-	}
-}
-
-func TestProductDBDSN_AssembledFromParts(t *testing.T) {
-	t.Setenv("PRODUCT_DB_DSN", "")
-	t.Setenv("PRODUCT_DB_HOST", "product-db")
-	t.Setenv("PRODUCT_DB_PORT", "")     // default 5432
-	t.Setenv("PRODUCT_DB_NAME", "product")
-	t.Setenv("PRODUCT_DB_USER", "inv@ro")
-	t.Setenv("PRODUCT_DB_PASSWORD", "p@ss/rd?&")
-	t.Setenv("PRODUCT_DB_SSLMODE", "") // default require (cross-tenant creds)
-	dsn, err := ProductDBDSN()
-	if err != nil {
-		t.Fatalf("ProductDBDSN() error: %v", err)
-	}
-	u, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatalf("ProductDBDSN() not parseable: %v", err)
-	}
-	if u.Host != "product-db:5432" {
-		t.Errorf("host = %q, want product-db:5432", u.Host)
-	}
-	if got, _ := u.User.Password(); got != "p@ss/rd?&" {
-		t.Errorf("password round-trip = %q", got)
-	}
-	if u.Query().Get("sslmode") != "require" {
-		t.Errorf("sslmode = %q, want require (secure default)", u.Query().Get("sslmode"))
-	}
-}
-
-func TestProductDBDSN_SSLModeOptOut(t *testing.T) {
-	t.Setenv("PRODUCT_DB_DSN", "")
-	t.Setenv("PRODUCT_DB_HOST", "product-db")
-	t.Setenv("PRODUCT_DB_NAME", "product")
-	t.Setenv("PRODUCT_DB_SSLMODE", "disable") // local dev opts out explicitly
-	dsn, err := ProductDBDSN()
-	if err != nil {
-		t.Fatalf("ProductDBDSN() error: %v", err)
-	}
-	u, _ := url.Parse(dsn)
-	if u.Query().Get("sslmode") != "disable" {
-		t.Errorf("sslmode = %q, want disable (explicit opt-out)", u.Query().Get("sslmode"))
-	}
-}
-
-func TestProductDBDSN_MissingConfigErrors(t *testing.T) {
-	for _, k := range []string{"PRODUCT_DB_DSN", "PRODUCT_DB_HOST", "PRODUCT_DB_NAME"} {
-		t.Setenv(k, "")
-	}
-	if _, err := ProductDBDSN(); err == nil {
-		t.Fatal("ProductDBDSN() with no config must error")
-	}
-}
-
 func TestLoad_Defaults(t *testing.T) {
 	// Empty value makes getEnv* fall back to the default.
 	for _, k := range []string{"SERVICE_NAME", "PORT", "GRPC_PORT", "ENV", "DB_HOST", "DB_POOL_MAX_CONNECTIONS"} {
@@ -277,7 +214,7 @@ func TestValidateErrorMentionsField(t *testing.T) {
 	}
 }
 
-// A subcommand (`migrate`, `seed`, `backfill`) runs an embedded SQL set against
+// A subcommand (`migrate`, `seed`) runs an embedded SQL set against
 // the database and exits. It never serves HTTP or gRPC, and the mop chart's
 // init container deliberately passes only DB_* env — the same contract every
 // other service on the platform runs under. So subcommand validation must cover

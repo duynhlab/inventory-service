@@ -1,9 +1,16 @@
 -- Demo stock for local development (RFC-0021 P1-2): balances for the seeded
 -- catalog products (sku_id = product id) in the default warehouse. on_hand
--- mirrors product-service's own demo stock so a local shadow/inventory read is
--- consistent with product (all 13 demo SKUs covered — 1..13). Real environments
--- are populated by the phase-2 backfill from product, never by this seed (the
--- seed subcommand refuses production).
+-- mirrors the numbers product-service used to seed, so a local read is consistent
+-- with the catalog (all 13 demo SKUs covered — 1..13).
+--
+-- This is NOT a recovery path for a real environment: it is dev-only (the seed
+-- subcommand refuses anything but ENV=development) and hard-coded to demo SKUs
+-- 1..13. The phase-2 backfill from product that used to populate real environments
+-- was retired in phase 4 with the column it copied, so a real balance now arrives
+-- one way only — an explicit RECEIVE movement through the normal write path, which
+-- keeps on_hand == SUM(on_hand_delta) intact. A fresh cluster therefore has NO
+-- balances until someone puts them there, and checkout correctly fails closed
+-- until then.
 INSERT INTO inventory_balances (sku_id, warehouse_id, on_hand, reserved, safety_stock)
 SELECT v.sku_id, w.id, v.on_hand, 0, 0
 FROM (VALUES
