@@ -179,6 +179,19 @@ func runSubcommand(cmd string, cfg *config.Config, logger *zap.Logger) bool {
 		}
 		logger.Info("Demo seed data applied")
 		return true
+	case "backfill":
+		// RETIRED in RFC-0021 phase 4 (see the note on runSubcommand). Kept as an
+		// explicit refusal, NOT deleted: `default` falls through to serving the app,
+		// so without this arm `inventory backfill --apply` would start a full HTTP +
+		// gRPC server inside a one-shot Job -- holding product-database credentials,
+		// with --apply silently discarded as an unparsed argument, and nothing to
+		// reap it. A removed subcommand has to say it was removed; anything else
+		// turns a stale runbook line into a running server.
+		logger.Fatal("`backfill` was retired in RFC-0021 phase 4 — its source column " +
+			"products.stock_quantity no longer exists, and the cross-service grant is " +
+			"revoked. Recover a balance at inventory: `seed` (dev only) or an explicit " +
+			"RECEIVE movement.")
+		return true
 	default:
 		return false
 	}
