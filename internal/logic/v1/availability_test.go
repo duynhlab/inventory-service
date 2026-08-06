@@ -139,12 +139,17 @@ func TestAvailabilityService_CheckAvailability(t *testing.T) {
 		if res.CanFulfill {
 			t.Fatalf("result = %+v, want shortage", res)
 		}
-		want := []ShortageLine{
-			{SKUID: "sku-a", Requested: 5, ATP: 1},
-			{SKUID: "sku-c", Requested: 1, ATP: 0}, // no balance row anywhere
-		}
+		// sku-a is tracked and genuinely short -> a shortage carrying its real
+		// ATP. sku-c has no balance row anywhere -> UNKNOWN, never a shortage at
+		// ATP 0: that would assert a quantity for a SKU this service has never
+		// heard of, and it is what used to tell a shopper "unavailable" when the
+		// truth was missing data.
+		want := []ShortageLine{{SKUID: "sku-a", Requested: 5, ATP: 1}}
 		if !reflect.DeepEqual(res.Shortages, want) {
 			t.Errorf("shortages = %+v, want %+v", res.Shortages, want)
+		}
+		if !reflect.DeepEqual(res.UnknownSKUIDs, []string{"sku-c"}) {
+			t.Errorf("unknown = %+v, want [sku-c]", res.UnknownSKUIDs)
 		}
 	})
 
@@ -152,9 +157,14 @@ func TestAvailabilityService_CheckAvailability(t *testing.T) {
 		// wh1 is active but empty for these SKUs; wh2 holds stock yet not
 		// enough. Shortages report against wh1 (ATP 0), never against the
 		// lowest warehouse that happens to have balance rows.
+		// tracked mirrors the real TrackedSKUs, which asks about ANY warehouse:
+		// sku-a holds stock in wh2, so it is tracked even though the shortage
+		// base (wh1) has no row for it. Without this the double would report it
+		// as unknown and the test would be asserting a fiction.
 		svc := NewAvailabilityService(&fakeAvailabilityRepo{
 			balances:  map[int64]map[string]int64{2: {"sku-a": 3}},
 			activeIDs: []int64{1, 2},
+			tracked:   map[string]bool{"sku-a": true},
 		})
 		res, err := svc.CheckAvailability(context.Background(), items(CheckItem{"sku-a", 5}))
 		if err != nil {
@@ -166,15 +176,92 @@ func TestAvailabilityService_CheckAvailability(t *testing.T) {
 		}
 	})
 
-	t.Run("no active warehouse at all -> every line short at ATP 0", func(t *testing.T) {
-		svc := NewAvailabilityService(&fakeAvailabilityRepo{})
-		res, err := svc.CheckAvailability(context.Background(), items(CheckItem{"sku-a", 2}))
+	t.Run("no active warehouse: tracked line is short, untracked line is unknown", func(t *testing.T) {
+		// Warehouse activity and tracked-ness are independent, and the answer
+		// keys on tracked-ness -- so "no active warehouse" does not relabel a
+		// known SKU as unknown. sku-a has stock in an inactive warehouse
+		// (tracked, un-promisable -> shortage at ATP 0); sku-zz has no row at
+		// all (unknown).
+		svc := NewAvailabilityService(&fakeAvailabilityRepo{
+			tracked: map[string]bool{"sku-a": true},
+		})
+		res, err := svc.CheckAvailability(context.Background(),
+			items(CheckItem{"sku-a", 2}, CheckItem{"sku-zz", 1}))
 		if err != nil {
 			t.Fatalf("got error %v, want nil", err)
 		}
 		want := []ShortageLine{{SKUID: "sku-a", Requested: 2, ATP: 0}}
 		if res.CanFulfill || !reflect.DeepEqual(res.Shortages, want) {
 			t.Errorf("result = %+v, want shortages %+v", res, want)
+		}
+		if !reflect.DeepEqual(res.UnknownSKUIDs, []string{"sku-zz"}) {
+			t.Errorf("unknown = %+v, want [sku-zz]", res.UnknownSKUIDs)
+		}
+	})
+
+	t.Run("canceled tracked lookup is not counted, a real one is", func(t *testing.T) {
+		// Asserting only "delta == 0" would pass trivially by counting NOTHING, so
+		// this subtest drives BOTH branches and asserts the delta is exactly 1.
+		// The SKU must be ABSENT from the base warehouse: only a line with no row
+		// there reaches the tracked lookup at all.
+		ctx := context.Background()
+		collect := func() int64 {
+			var rm metricdata.ResourceMetrics
+			if err := testMetricReader.Collect(ctx, &rm); err != nil {
+				t.Fatalf("collect metrics: %v", err)
+			}
+			return errorOutcomeCount(rm)
+		}
+		before := collect()
+
+		canceled := NewAvailabilityService(&fakeAvailabilityRepo{
+			balances:   map[int64]map[string]int64{1: {"sku-other": 9}},
+			activeIDs:  []int64{1},
+			trackedErr: fmt.Errorf("tracked query: %w", context.Canceled),
+		})
+		if _, err := canceled.CheckAvailability(ctx, items(CheckItem{"sku-absent", 1})); err == nil {
+			t.Fatal("got nil error, want canceled error")
+		}
+		down := NewAvailabilityService(&fakeAvailabilityRepo{
+			balances:   map[int64]map[string]int64{1: {"sku-other": 9}},
+			activeIDs:  []int64{1},
+			trackedErr: errors.New("tracked query down"),
+		})
+		if _, err := down.CheckAvailability(ctx, items(CheckItem{"sku-absent", 1})); err == nil {
+			t.Fatal("got nil error, want repository error")
+		}
+
+		if got := collect() - before; got != 1 {
+			t.Errorf("outcome=error delta = %d, want exactly 1 (canceled must not count, db-down must)", got)
+		}
+	})
+
+	t.Run("tracked lookup failure fails the call instead of guessing", func(t *testing.T) {
+		// Answering "shortage" would name a quantity we could not verify; answering
+		// "unknown" would blame the data for a database problem.
+		svc := NewAvailabilityService(&fakeAvailabilityRepo{
+			balances:   map[int64]map[string]int64{1: {"sku-other": 9}},
+			activeIDs:  []int64{1},
+			trackedErr: errors.New("tracked query down"),
+		})
+		res, err := svc.CheckAvailability(context.Background(), items(CheckItem{"sku-absent", 5}))
+		if err == nil {
+			t.Fatalf("result = %+v, want an error", res)
+		}
+		if res != nil {
+			t.Errorf("result = %+v, want nil alongside the error", res)
+		}
+	})
+
+	t.Run("a non-positive quantity is refused by the logic layer too", func(t *testing.T) {
+		// The gRPC edge validates this; the invariant "can_fulfill is false whenever
+		// UnknownSKUIDs is non-empty" is stated HERE, so it is enforced here too.
+		// Without it, `base[sku] < 0` is false and the fast path would promise a SKU
+		// the service may never have heard of.
+		svc := NewAvailabilityService(&fakeAvailabilityRepo{})
+		res, err := svc.CheckAvailability(context.Background(), items(CheckItem{"sku-a", 0}))
+		if !errors.Is(err, ErrNonPositiveQuantity) {
+			t.Fatalf("err = %v (result %+v), want ErrNonPositiveQuantity", err, res)
 		}
 	})
 

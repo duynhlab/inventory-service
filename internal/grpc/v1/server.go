@@ -151,8 +151,9 @@ func (s *Server) CheckAvailability(
 		})
 	}
 	return &inventoryv1.CheckAvailabilityResponse{
-		CanFulfill: result.CanFulfill,
-		Shortages:  shortages,
+		CanFulfill:    result.CanFulfill,
+		Shortages:     shortages,
+		UnknownSkuIds: result.UnknownSKUIDs,
 	}, nil
 }
 
