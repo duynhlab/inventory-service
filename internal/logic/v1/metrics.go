@@ -38,7 +38,13 @@ var (
 const (
 	outcomeFulfillable = "fulfillable"
 	outcomeShortage    = "shortage"
-	outcomeError       = "error"
+	// unknown_sku: at least one requested SKU has no balance row anywhere, so
+	// the basket cannot be promised for a reason that is a DATA problem rather
+	// than a business answer. Split from shortage deliberately: they need
+	// different responses (fix the data vs tell the shopper) and lumping them
+	// together is what made a missing row look like a real stockout.
+	outcomeUnknownSKU = "unknown_sku"
+	outcomeError      = "error"
 )
 
 // Reservation operations and outcomes (bounded).

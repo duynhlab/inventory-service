@@ -51,11 +51,22 @@ type ShortageLine struct {
 	ATP       int64
 }
 
-// CheckResult is the whole-basket answer. Shortages is empty when CanFulfill
-// is true.
+// CheckResult is the whole-basket answer. Shortages and UnknownSKUIDs are both
+// empty when CanFulfill is true.
 type CheckResult struct {
 	CanFulfill bool
-	Shortages  []ShortageLine
+	// Shortages are lines this service TRACKS and cannot fulfill — a business
+	// answer carrying a real quantity.
+	Shortages []ShortageLine
+	// UnknownSKUIDs are requested SKUs with no balance row in any warehouse.
+	//
+	// They are NOT reported as shortages, and that distinction is the point: a
+	// shortage asserts "there are N of these", which this service cannot claim
+	// about a SKU it has never heard of. Reporting one as a zero-ATP shortage
+	// told the shopper an item was unavailable when the real problem was missing
+	// data — and it is missing data that is now the realistic case, since the
+	// phase-2 backfill from product was retired with the column it copied.
+	UnknownSKUIDs []string
 }
 
 // AvailabilityReader is the repository dependency of AvailabilityService.
@@ -186,15 +197,55 @@ func (s *AvailabilityService) CheckAvailability(ctx context.Context, items []Che
 	if len(activeIDs) > 0 {
 		base = byWarehouse[activeIDs[0]]
 	}
-	shortages := make([]ShortageLine, 0, len(items))
+
+	// Absent from the chosen warehouse's map means one of two very different
+	// things, and the same lookup BatchGetAvailability already uses tells them
+	// apart: tracked somewhere (a real zero here) versus not tracked at all.
+	// Only ask about the lines that are actually short, so a fulfillable-shaped
+	// basket costs no extra query.
+	shortIDs := make([]string, 0, len(items))
 	for _, it := range items {
-		if atp := base[it.SKUID]; atp < it.Quantity {
-			shortages = append(shortages, ShortageLine{SKUID: it.SKUID, Requested: it.Quantity, ATP: atp})
+		if base[it.SKUID] < it.Quantity {
+			shortIDs = append(shortIDs, it.SKUID)
 		}
 	}
-	recordCheck(ctx, outcomeShortage)
-	setSpanOutcome(ctx, outcomeShortage)
-	return &CheckResult{Shortages: shortages}, nil
+	tracked := map[string]bool{}
+	if len(shortIDs) > 0 {
+		if tracked, err = s.repo.TrackedSKUs(ctx, shortIDs); err != nil {
+			// Fail the CALL rather than guess. Answering "shortage" here would
+			// name quantities we could not verify, and answering "unknown"
+			// would blame the data for a database problem.
+			if !errors.Is(err, context.Canceled) {
+				recordCheck(ctx, outcomeError)
+			}
+			recordSpanError(ctx, opCheckAvailability, err)
+			return nil, fmt.Errorf("check availability: tracked lookup: %w", err)
+		}
+	}
+
+	shortages := make([]ShortageLine, 0, len(shortIDs))
+	unknown := make([]string, 0)
+	for _, it := range items {
+		atp := base[it.SKUID]
+		if atp >= it.Quantity {
+			continue
+		}
+		if _, hasATP := base[it.SKUID]; hasATP || tracked[it.SKUID] {
+			shortages = append(shortages, ShortageLine{SKUID: it.SKUID, Requested: it.Quantity, ATP: atp})
+			continue
+		}
+		unknown = append(unknown, it.SKUID)
+	}
+
+	// An unknown SKU dominates the outcome label: the basket's blocking reason
+	// is the one an operator must act on, and a data gap outranks a stockout.
+	outcome := outcomeShortage
+	if len(unknown) > 0 {
+		outcome = outcomeUnknownSKU
+	}
+	recordCheck(ctx, outcome)
+	setSpanOutcome(ctx, outcome)
+	return &CheckResult{Shortages: shortages, UnknownSKUIDs: unknown}, nil
 }
 
 // fulfills reports whether one warehouse's ATP satisfies every basket line.

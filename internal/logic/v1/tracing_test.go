@@ -219,11 +219,22 @@ func TestGetReservation_SpanRecordsInfraErrorOnly(t *testing.T) {
 
 func TestAvailability_EmitsBoundedLogicSpans(t *testing.T) {
 	t.Run("check availability shortage", func(t *testing.T) {
-		svc := NewAvailabilityService(&fakeAvailabilityRepo{})
+		// tracked: the line is a real shortage, so the outcome stays `shortage`.
+		svc := NewAvailabilityService(&fakeAvailabilityRepo{tracked: map[string]bool{"sku-a": true}})
 		if _, err := svc.CheckAvailability(context.Background(), []CheckItem{{SKUID: "sku-a", Quantity: 1}}); err != nil {
 			t.Fatalf("check: %v", err)
 		}
 		assertBoundedLogicSpan(t, lastSpan(t, "inventory.check_availability"), "check_availability", "shortage")
+	})
+
+	t.Run("check availability unknown sku is its own outcome", func(t *testing.T) {
+		// Untracked, so the blocking reason is a data gap rather than a
+		// stockout -- and an operator needs to see which one it was.
+		svc := NewAvailabilityService(&fakeAvailabilityRepo{})
+		if _, err := svc.CheckAvailability(context.Background(), []CheckItem{{SKUID: "sku-a", Quantity: 1}}); err != nil {
+			t.Fatalf("check: %v", err)
+		}
+		assertBoundedLogicSpan(t, lastSpan(t, "inventory.check_availability"), "check_availability", "unknown_sku")
 	})
 
 	t.Run("check availability infra error records a bounded error", func(t *testing.T) {
