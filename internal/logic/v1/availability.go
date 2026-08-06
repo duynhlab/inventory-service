@@ -43,6 +43,11 @@ type CheckItem struct {
 	Quantity int64
 }
 
+// ErrNonPositiveQuantity rejects a basket line asking for zero or fewer units.
+// The gRPC edge already validates this; the logic layer refuses it too because
+// its own can_fulfill/UnknownSKUIDs invariant depends on it.
+var ErrNonPositiveQuantity = errors.New("basket line quantity must be positive")
+
 // ShortageLine names a line the chosen warehouse cannot fulfill and by how
 // much.
 type ShortageLine struct {
@@ -156,18 +161,34 @@ func statusFor(atp int64) AvailabilityStatus {
 // whole order from one warehouse, so summed cross-warehouse stock does not
 // count). Warehouses are evaluated in ascending id so the answer is
 // deterministic under equal stock; a warehouse with no balance rows simply
-// cannot fulfill (every quantity is > 0). When none fulfills, shortages are
-// computed against the lowest-id ACTIVE warehouse overall — the same one
-// Reserve would try first — even when it holds no rows for these SKUs; a SKU
-// with no balance row there counts as ATP 0. When NO active warehouse exists
-// the basket is unfulfillable by definition: can_fulfill false with every
-// line short at ATP 0.
+// cannot fulfill (quantities are validated positive below). When none fulfills,
+// shortages are computed against the lowest-id ACTIVE warehouse overall — the
+// same one Reserve would try first — even when it holds no rows for these SKUs.
+//
+// A line with no row in that warehouse is then CLASSIFIED, not assumed: tracked
+// somewhere else (including an inactive warehouse) makes it a shortage at ATP 0,
+// while a SKU tracked NOWHERE goes to UnknownSKUIDs instead — a shortage asserts
+// a quantity this service cannot claim about a SKU it has never heard of. That
+// holds when NO active warehouse exists too: warehouse activity and tracked-ness
+// are independent, so an empty active set never turns a known SKU into an unknown
+// one.
 func (s *AvailabilityService) CheckAvailability(ctx context.Context, items []CheckItem) (*CheckResult, error) {
 	ctx, span := startLogicSpan(ctx, opCheckAvailability)
 	defer span.End()
 
 	skuIDs := make([]string, 0, len(items))
 	for _, it := range items {
+		// Enforced here, not only at the transport edge. Both the proto and
+		// CheckResult promise "can_fulfill is false whenever UnknownSKUIDs is
+		// non-empty", and a non-positive quantity would break it: `base[sku] < 0`
+		// is false, so the fast path below would call the line fulfilled and
+		// promise a SKU this service may never have heard of. The layer that states
+		// an invariant should be the layer that holds it.
+		if it.Quantity <= 0 {
+			recordCheck(ctx, outcomeError)
+			recordSpanError(ctx, opCheckAvailability, ErrNonPositiveQuantity)
+			return nil, fmt.Errorf("%w: sku %q", ErrNonPositiveQuantity, it.SKUID)
+		}
 		skuIDs = append(skuIDs, it.SKUID)
 	}
 
@@ -201,17 +222,21 @@ func (s *AvailabilityService) CheckAvailability(ctx context.Context, items []Che
 	// Absent from the chosen warehouse's map means one of two very different
 	// things, and the same lookup BatchGetAvailability already uses tells them
 	// apart: tracked somewhere (a real zero here) versus not tracked at all.
-	// Only ask about the lines that are actually short, so a fulfillable-shaped
-	// basket costs no extra query.
-	shortIDs := make([]string, 0, len(items))
+	//
+	// Only the ABSENT ids need disambiguating — a line with a row here is tracked
+	// by definition. Same narrowing as BatchGetAvailability, and it matters: the
+	// commonest unfulfillable basket is a row that exists at ATP 0, which would
+	// otherwise pay for a second round trip that could only confirm what the first
+	// already showed.
+	missing := make([]string, 0, len(items))
 	for _, it := range items {
-		if base[it.SKUID] < it.Quantity {
-			shortIDs = append(shortIDs, it.SKUID)
+		if _, ok := base[it.SKUID]; !ok {
+			missing = append(missing, it.SKUID)
 		}
 	}
 	tracked := map[string]bool{}
-	if len(shortIDs) > 0 {
-		if tracked, err = s.repo.TrackedSKUs(ctx, shortIDs); err != nil {
+	if len(missing) > 0 {
+		if tracked, err = s.repo.TrackedSKUs(ctx, missing); err != nil {
 			// Fail the CALL rather than guess. Answering "shortage" here would
 			// name quantities we could not verify, and answering "unknown"
 			// would blame the data for a database problem.
@@ -223,7 +248,7 @@ func (s *AvailabilityService) CheckAvailability(ctx context.Context, items []Che
 		}
 	}
 
-	shortages := make([]ShortageLine, 0, len(shortIDs))
+	shortages := make([]ShortageLine, 0, len(items))
 	unknown := make([]string, 0)
 	for _, it := range items {
 		atp := base[it.SKUID]

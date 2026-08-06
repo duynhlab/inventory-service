@@ -199,9 +199,11 @@ func TestAvailabilityService_CheckAvailability(t *testing.T) {
 		}
 	})
 
-	t.Run("canceled tracked lookup is not counted as an error outcome", func(t *testing.T) {
-		// Same rule as the first query: a caller hanging up is not a check
-		// outcome, so it must not show up as DB trouble on the dashboard.
+	t.Run("canceled tracked lookup is not counted, a real one is", func(t *testing.T) {
+		// Asserting only "delta == 0" would pass trivially by counting NOTHING, so
+		// this subtest drives BOTH branches and asserts the delta is exactly 1.
+		// The SKU must be ABSENT from the base warehouse: only a line with no row
+		// there reaches the tracked lookup at all.
 		ctx := context.Background()
 		collect := func() int64 {
 			var rm metricdata.ResourceMetrics
@@ -211,33 +213,55 @@ func TestAvailabilityService_CheckAvailability(t *testing.T) {
 			return errorOutcomeCount(rm)
 		}
 		before := collect()
-		svc := NewAvailabilityService(&fakeAvailabilityRepo{
-			balances:   map[int64]map[string]int64{1: {"sku-a": 1}},
+
+		canceled := NewAvailabilityService(&fakeAvailabilityRepo{
+			balances:   map[int64]map[string]int64{1: {"sku-other": 9}},
 			activeIDs:  []int64{1},
 			trackedErr: fmt.Errorf("tracked query: %w", context.Canceled),
 		})
-		if _, err := svc.CheckAvailability(ctx, items(CheckItem{"sku-a", 5})); err == nil {
+		if _, err := canceled.CheckAvailability(ctx, items(CheckItem{"sku-absent", 1})); err == nil {
 			t.Fatal("got nil error, want canceled error")
 		}
-		if got := collect() - before; got != 0 {
-			t.Errorf("outcome=error delta = %d, want 0 (canceled must not count)", got)
+		down := NewAvailabilityService(&fakeAvailabilityRepo{
+			balances:   map[int64]map[string]int64{1: {"sku-other": 9}},
+			activeIDs:  []int64{1},
+			trackedErr: errors.New("tracked query down"),
+		})
+		if _, err := down.CheckAvailability(ctx, items(CheckItem{"sku-absent", 1})); err == nil {
+			t.Fatal("got nil error, want repository error")
+		}
+
+		if got := collect() - before; got != 1 {
+			t.Errorf("outcome=error delta = %d, want exactly 1 (canceled must not count, db-down must)", got)
 		}
 	})
 
 	t.Run("tracked lookup failure fails the call instead of guessing", func(t *testing.T) {
-		// Answering "shortage" here would name quantities we could not verify;
-		// answering "unknown" would blame the data for a database problem.
+		// Answering "shortage" would name a quantity we could not verify; answering
+		// "unknown" would blame the data for a database problem.
 		svc := NewAvailabilityService(&fakeAvailabilityRepo{
-			balances:   map[int64]map[string]int64{1: {"sku-a": 1}},
+			balances:   map[int64]map[string]int64{1: {"sku-other": 9}},
 			activeIDs:  []int64{1},
 			trackedErr: errors.New("tracked query down"),
 		})
-		res, err := svc.CheckAvailability(context.Background(), items(CheckItem{"sku-a", 5}))
+		res, err := svc.CheckAvailability(context.Background(), items(CheckItem{"sku-absent", 5}))
 		if err == nil {
 			t.Fatalf("result = %+v, want an error", res)
 		}
 		if res != nil {
 			t.Errorf("result = %+v, want nil alongside the error", res)
+		}
+	})
+
+	t.Run("a non-positive quantity is refused by the logic layer too", func(t *testing.T) {
+		// The gRPC edge validates this; the invariant "can_fulfill is false whenever
+		// UnknownSKUIDs is non-empty" is stated HERE, so it is enforced here too.
+		// Without it, `base[sku] < 0` is false and the fast path would promise a SKU
+		// the service may never have heard of.
+		svc := NewAvailabilityService(&fakeAvailabilityRepo{})
+		res, err := svc.CheckAvailability(context.Background(), items(CheckItem{"sku-a", 0}))
+		if !errors.Is(err, ErrNonPositiveQuantity) {
+			t.Fatalf("err = %v (result %+v), want ErrNonPositiveQuantity", err, res)
 		}
 	})
 

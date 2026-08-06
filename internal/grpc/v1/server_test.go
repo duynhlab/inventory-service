@@ -165,6 +165,30 @@ func TestServer_CheckAvailability(t *testing.T) {
 		}
 	})
 
+	t.Run("unknown SKUs map to their own field, never to shortages", func(t *testing.T) {
+		// The whole point of the field: a shortage carries a quantity claim, an
+		// untracked SKU cannot. Dropping this mapping silently reverts the feature
+		// -- checkout would see can_fulfill=false with an empty shortages list and
+		// block every line, telling the shopper an item is gone.
+		srv := newTestServer(&availabilityStub{check: &logicv1.CheckResult{
+			Shortages:     []logicv1.ShortageLine{{SKUID: "sku-a", Requested: 5, ATP: 2}},
+			UnknownSKUIDs: []string{"sku-zz"},
+		}})
+		resp, err := srv.CheckAvailability(context.Background(),
+			&inventoryv1.CheckAvailabilityRequest{Items: []*inventoryv1.ReservationItem{
+				{SkuId: "sku-a", Quantity: 5}, {SkuId: "sku-zz", Quantity: 1},
+			}})
+		if err != nil {
+			t.Fatalf("got error %v, want nil", err)
+		}
+		if got := resp.GetUnknownSkuIds(); len(got) != 1 || got[0] != "sku-zz" {
+			t.Errorf("unknown_sku_ids = %v, want [sku-zz]", got)
+		}
+		if len(resp.GetShortages()) != 1 || resp.GetShortages()[0].GetSkuId() != "sku-a" {
+			t.Errorf("shortages = %+v, want only the tracked line", resp.GetShortages())
+		}
+	})
+
 	t.Run("duplicate SKU lines aggregate before the logic layer", func(t *testing.T) {
 		// Two lines of 3 against an ATP of 5 must reach logic as one demand
 		// of 6 — otherwise each line passes alone and the basket oversells.
