@@ -209,6 +209,15 @@ func TestServer_Reserve(t *testing.T) {
 		}
 	})
 
+	t.Run("unknown sku -> FailedPrecondition SKU_NOT_FOUND, ids not echoed", func(t *testing.T) {
+		stub := &reservationsStub{err: &domain.UnknownSKUError{SKUIDs: []string{"ghost"}}}
+		_, err := newReservationServer(stub).Reserve(context.Background(), reserveRequest())
+		wantReason(t, err, codes.FailedPrecondition, grpcx.ReasonSKUNotFound)
+		if s, _ := status.FromError(err); strings.Contains(s.Message(), "ghost") {
+			t.Fatalf("sku ids leaked into the wire message: %q", s.Message())
+		}
+	})
+
 	t.Run("insufficient stock -> FailedPrecondition INSUFFICIENT_STOCK", func(t *testing.T) {
 		stub := &reservationsStub{err: &domain.InsufficientStockError{
 			Shortages: []domain.Shortage{{SKUID: "sku-a", Requested: 2, ATP: 0}}}}

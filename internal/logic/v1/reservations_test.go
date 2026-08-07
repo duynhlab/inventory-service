@@ -206,3 +206,15 @@ func reservationOutcomeCounts(t *testing.T) map[[2]string]int64 {
 	}
 	return out
 }
+
+// The unknown-SKU verdict gets its own bounded outcome label — the same value
+// the availability read uses, so one dashboard row covers both paths.
+func TestFailureOutcome_UnknownSKU(t *testing.T) {
+	err := error(&domain.UnknownSKUError{SKUIDs: []string{"ghost"}})
+	if got := failureOutcome(err); got != outcomeUnknownSKU {
+		t.Fatalf("outcome = %q, want %q", got, outcomeUnknownSKU)
+	}
+	if got := failureOutcome(&domain.InsufficientStockError{}); got != outcomeInsufficient {
+		t.Fatalf("shortage outcome = %q, want %q", got, outcomeInsufficient)
+	}
+}

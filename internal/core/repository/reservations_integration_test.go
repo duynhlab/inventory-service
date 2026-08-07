@@ -532,3 +532,67 @@ func TestTransitionFailsClosedOnMissingBalance(t *testing.T) {
 		t.Fatal("release with vanished balance row succeeded, want fail-closed error")
 	}
 }
+
+// The reservation layer's tracked/untracked split (RFC-0021 deferred item 2):
+// a SKU with no balance row in ANY warehouse must answer ErrUnknownSKU — a
+// data gap — never a fabricated quantity claim. A tracked SKU at ATP 0 stays
+// a shortage, and in a mixed basket the data gap wins.
+func TestReserveUnknownSKUIsNotAStockout(t *testing.T) {
+	f := newReservationFixture(t)
+	ctx := context.Background()
+
+	t.Run("no balance row anywhere -> unknown, with the ids", func(t *testing.T) {
+		_, err := f.repo.Reserve(ctx, req("unk-1",
+			domain.Line{SKUID: "ghost-sku", Quantity: 1}))
+		if !errors.Is(err, domain.ErrUnknownSKU) {
+			t.Fatalf("err = %v, want ErrUnknownSKU", err)
+		}
+		var unk *domain.UnknownSKUError
+		if !errors.As(err, &unk) || len(unk.SKUIDs) != 1 || unk.SKUIDs[0] != "ghost-sku" {
+			t.Fatalf("detail = %+v, want [ghost-sku]", unk)
+		}
+		if errors.Is(err, domain.ErrInsufficientStock) {
+			t.Fatal("a data gap must not also read as a stockout")
+		}
+	})
+
+	t.Run("tracked but zero ATP stays a shortage", func(t *testing.T) {
+		f.seedBalance(t, "empty-sku", f.wh, 0, 0, 0)
+		_, err := f.repo.Reserve(ctx, req("unk-2",
+			domain.Line{SKUID: "empty-sku", Quantity: 1}))
+		if !errors.Is(err, domain.ErrInsufficientStock) {
+			t.Fatalf("err = %v, want ErrInsufficientStock", err)
+		}
+		if errors.Is(err, domain.ErrUnknownSKU) {
+			t.Fatal("a tracked SKU must never read as unknown")
+		}
+	})
+
+	t.Run("mixed basket: the data gap wins over the shortage", func(t *testing.T) {
+		f.seedBalance(t, "mixed-short", f.wh, 1, 0, 0)
+		_, err := f.repo.Reserve(ctx, req("unk-3",
+			domain.Line{SKUID: "mixed-short", Quantity: 5},
+			domain.Line{SKUID: "mixed-ghost", Quantity: 1}))
+		var unk *domain.UnknownSKUError
+		if !errors.As(err, &unk) || len(unk.SKUIDs) != 1 || unk.SKUIDs[0] != "mixed-ghost" {
+			t.Fatalf("err = %v, want UnknownSKUError naming only mixed-ghost", err)
+		}
+	})
+
+	t.Run("balance row in an INACTIVE warehouse still counts as tracked", func(t *testing.T) {
+		var whOff int64
+		if err := f.pool.QueryRow(ctx,
+			`INSERT INTO warehouses (code, name, status) VALUES ('WH-OFF', 'Dark', 'inactive') RETURNING id`).
+			Scan(&whOff); err != nil {
+			t.Fatalf("insert inactive warehouse: %v", err)
+		}
+		f.seedBalance(t, "dark-sku", whOff, 50, 0, 0)
+		_, err := f.repo.Reserve(ctx, req("unk-4",
+			domain.Line{SKUID: "dark-sku", Quantity: 1}))
+		// Un-promisable, not unknowable: the availability read draws the same
+		// line (TrackedSKUs is any-warehouse, active or not).
+		if !errors.Is(err, domain.ErrInsufficientStock) {
+			t.Fatalf("err = %v, want ErrInsufficientStock (tracked, dark)", err)
+		}
+	})
+}

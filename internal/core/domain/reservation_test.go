@@ -79,3 +79,19 @@ func TestInsufficientStockErrorUnwrapsToSentinel(t *testing.T) {
 		t.Error("empty error message")
 	}
 }
+
+// UnknownSKUError must chain to ErrUnknownSKU (errors.Is) without ever
+// reading as a stockout, and its message carries a count, not the ids —
+// ids belong in logs and spans.
+func TestUnknownSKUError(t *testing.T) {
+	err := error(&domain.UnknownSKUError{SKUIDs: []string{"a", "b"}})
+	if !errors.Is(err, domain.ErrUnknownSKU) {
+		t.Fatal("UnknownSKUError must match ErrUnknownSKU")
+	}
+	if errors.Is(err, domain.ErrInsufficientStock) {
+		t.Fatal("a data gap must not chain to the stockout sentinel")
+	}
+	if got := err.Error(); got != "2 sku(s) have no balance row in any warehouse" {
+		t.Fatalf("message = %q", got)
+	}
+}
