@@ -172,6 +172,11 @@ func (s *ReservationService) logOutcome(operation, outcome string) {
 // failureOutcome maps a domain error onto its bounded outcome label.
 func failureOutcome(err error) string {
 	switch {
+	case errors.Is(err, domain.ErrUnknownSKU):
+		// A data gap, not a stockout — the same label the availability read
+		// uses, so one dashboard row answers "is anything unseeded?" for both
+		// paths.
+		return outcomeUnknownSKU
 	case errors.Is(err, domain.ErrInsufficientStock):
 		return outcomeInsufficient
 	case errors.Is(err, domain.ErrIdempotencyConflict):

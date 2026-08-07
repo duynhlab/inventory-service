@@ -185,6 +185,13 @@ func reservationLines(items []*inventoryv1.ReservationItem) ([]domain.Line, erro
 // storage failure and fails closed as retryable DEPENDENCY_UNAVAILABLE.
 func (s *Server) reservationError(rpc string, err error) error {
 	switch {
+	case errors.Is(err, domain.ErrUnknownSKU):
+		// Before ErrInsufficientStock arm-order matters conceptually, but the
+		// errors are distinct types so either order is correct; the reason
+		// token was reserved in the contract vocabulary from day one and
+		// finally has a producer. The ids stay in logs/spans, not the message.
+		return grpcx.ErrorWithReason(codes.FailedPrecondition, grpcx.ReasonSKUNotFound,
+			"sku not tracked by inventory", nil)
 	case errors.Is(err, domain.ErrInsufficientStock):
 		return grpcx.ErrorWithReason(codes.FailedPrecondition, grpcx.ReasonInsufficientStock,
 			"insufficient stock to reserve", nil)

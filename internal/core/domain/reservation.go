@@ -25,6 +25,13 @@ const (
 // per-line shortage detail.
 var ErrInsufficientStock = errors.New("insufficient stock to reserve")
 
+// ErrUnknownSKU is returned when a requested SKU has no balance row in ANY
+// warehouse — inventory has never heard of it. This is a DATA GAP, not a
+// stockout: conflating the two filed seeding problems under
+// INSUFFICIENT_STOCK, where a real customer-demand signal hid them
+// (RFC-0021 deferred item 2). Wrap in UnknownSKUError for the ids.
+var ErrUnknownSKU = errors.New("sku has no balance row in any warehouse")
+
 // ErrIdempotencyConflict is returned when a reservation_id is replayed with a
 // different request hash, or a different reservation_id reuses an order_id —
 // silently accepting either would tell a caller their divergent request
@@ -61,6 +68,19 @@ func (e *InsufficientStockError) Error() string {
 }
 
 func (e *InsufficientStockError) Unwrap() error { return ErrInsufficientStock }
+
+// UnknownSKUError carries the untracked ids behind ErrUnknownSKU (matched via
+// errors.Is). It takes precedence over a shortage in a mixed basket: a
+// quantity claim about a SKU inventory does not know would be fabricated.
+type UnknownSKUError struct {
+	SKUIDs []string
+}
+
+func (e *UnknownSKUError) Error() string {
+	return fmt.Sprintf("%d sku(s) have no balance row in any warehouse", len(e.SKUIDs))
+}
+
+func (e *UnknownSKUError) Unwrap() error { return ErrUnknownSKU }
 
 // Line is one aggregated SKU/quantity pair of a reservation request.
 type Line struct {

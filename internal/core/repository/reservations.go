@@ -190,7 +190,7 @@ func allocateReservation(ctx context.Context, tx pgx.Tx, items []domain.Line) ([
 		if len(activeIDs) > 0 {
 			base = byWarehouse[activeIDs[0]]
 		}
-		return nil, &domain.InsufficientStockError{Shortages: shortagesAgainst(base, items)}
+		return nil, classifyReservationFailure(ctx, tx, items, shortagesAgainst(base, items))
 	}
 
 	locked, err := lockWarehouseATP(ctx, tx, chosen, items)
@@ -198,7 +198,7 @@ func allocateReservation(ctx context.Context, tx pgx.Tx, items []domain.Line) ([
 		return nil, err
 	}
 	if short := shortagesAgainst(locked, items); len(short) > 0 {
-		return nil, &domain.InsufficientStockError{Shortages: short}
+		return nil, classifyReservationFailure(ctx, tx, items, short)
 	}
 
 	allocations := make([]domain.Allocation, 0, len(items))
@@ -534,6 +534,48 @@ func fulfillsLines(atp map[string]int64, items []domain.Line) bool {
 		}
 	}
 	return true
+}
+
+// classifyReservationFailure decides what a failed allocation MEANS before it
+// crosses the domain boundary: a shortage is a quantity verdict, and a
+// quantity verdict about a SKU with no balance row anywhere would be
+// fabricated. Mirrors the availability read's tracked/untracked split
+// (TrackedSKUs) inside the reservation transaction, and — like checkout's
+// fail-closed precedence — the data gap wins over the shortage in a mixed
+// basket. On a classification read error, fail toward the storage error: the
+// caller's fail-closed default is retryable, which is the safe direction.
+func classifyReservationFailure(ctx context.Context, tx pgx.Tx, items []domain.Line, short []domain.Shortage) error {
+	ids := make([]string, 0, len(items))
+	for _, it := range items {
+		ids = append(ids, it.SKUID)
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT DISTINCT sku_id FROM inventory_balances WHERE sku_id = ANY($1)`, ids)
+	if err != nil {
+		return fmt.Errorf("classify reservation failure: %w", err)
+	}
+	defer rows.Close()
+	tracked := make(map[string]bool, len(ids))
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("classify reservation failure scan: %w", err)
+		}
+		tracked[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("classify reservation failure rows: %w", err)
+	}
+	var unknown []string
+	for _, id := range ids {
+		if !tracked[id] {
+			unknown = append(unknown, id)
+		}
+	}
+	if len(unknown) > 0 {
+		return &domain.UnknownSKUError{SKUIDs: unknown}
+	}
+	return &domain.InsufficientStockError{Shortages: short}
 }
 
 // shortagesAgainst lists the lines base cannot satisfy; a SKU absent from
