@@ -7,6 +7,12 @@ updates:
       interval: "daily"
     open-pull-requests-limit: 10
     labels: ["dependencies", "go"]
+    # pkg is one module per package since v0.36, so an ungrouped bump would open
+    # six PRs against a limit of ten and crowd out everything else.
+    groups:
+      duynhlab-pkg:
+        patterns:
+          - "github.com/duynhlab/pkg/*"
 
   - package-ecosystem: "github-actions"
     directory: "/"
