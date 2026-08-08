@@ -3,7 +3,12 @@ module github.com/duynhlab/inventory-service
 go 1.26.2
 
 require (
-	github.com/duynhlab/pkg v0.35.0
+	github.com/duynhlab/pkg/dbx v0.36.1
+	github.com/duynhlab/pkg/grpcx v0.36.1
+	github.com/duynhlab/pkg/logger/zapx v0.36.0
+	github.com/duynhlab/pkg/migratex v0.36.1
+	github.com/duynhlab/pkg/obsx v0.36.1
+	github.com/duynhlab/pkg/proto v0.36.1
 	github.com/gin-gonic/gin v1.12.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
@@ -109,16 +114,23 @@ require (
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/arch v0.22.0 // indirect
-	golang.org/x/crypto v0.52.0 // indirect
-	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/crypto v0.53.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-// For local development with pkg
-// replace github.com/duynhlab/pkg => ../pkg
+// For local development with pkg (uncomment only what you develop against).
+// pkg is one module per package since v0.36 — its root has no go.mod, so a
+// single replace of github.com/duynhlab/pkg can no longer resolve.
+// replace github.com/duynhlab/pkg/dbx => ../pkg/dbx
+// replace github.com/duynhlab/pkg/grpcx => ../pkg/grpcx
+// replace github.com/duynhlab/pkg/logger/zapx => ../pkg/logger/zapx
+// replace github.com/duynhlab/pkg/migratex => ../pkg/migratex
+// replace github.com/duynhlab/pkg/obsx => ../pkg/obsx
+// replace github.com/duynhlab/pkg/proto => ../pkg/proto
