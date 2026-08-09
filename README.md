@@ -11,9 +11,10 @@ append-only movement ledger.
 - **Does not own:** the product catalog or prices (`product-service`), order
   status (`order-service`), or the decision to buy (`checkout-service`).
 
-Since RFC-0021 phase 4 there is no alternative stock surface to fall back to —
-product's stock RPCs, read fields and schema are gone. That is deliberate, and it
-is why callers fail closed rather than guessing.
+There is no second place to ask for stock. The product service used to carry a
+stock surface; its RPCs, read fields and schema were removed once inventory took
+over, so there is nothing to fall back to. That is deliberate, and it is why
+callers fail closed rather than guessing.
 
 ## Tech
 
@@ -71,7 +72,6 @@ golangci-lint run
 
 - [Canonical contract](https://github.com/duynhlab/homelab/blob/main/docs/api/inventory.md)
 - [local-stack guide](https://github.com/duynhlab/homelab/blob/main/local-stack/README.md)
-- [RFC-0021](https://github.com/duynhlab/homelab/tree/main/docs/proposals/rfc/RFC-0021) — why inventory owns stock, and the phased cutover that retired the product-owned surface
 
 ## License
 
