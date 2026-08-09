@@ -1,74 +1,77 @@
 # inventory-service
 
-Inventory microservice for the `duynhlab` platform — the **sole authority for
-stock**: balances, reservations, allocations, and the stock-movement ledger
-(RFC-0021, supersedes the product-owned stock surface).
+The platform's **sole authority for stock**: per-warehouse balances,
+all-or-nothing reservations against a derived available-to-promise, and an
+append-only movement ledger.
 
-Module path: `github.com/duynhlab/inventory-service`.
+## Responsibilities
 
-**Status: Bootstrap (RFC-0021 P1-1).** The skeleton serves operational HTTP on
-`:8080` (`/health`, `/ready`) and the `inventory.v1.InventoryService` gRPC
-server on `:9090` with every RPC answering `Unimplemented`. Schema (P1-2) and
-RPC implementations (P1-3..P1-5) follow. Design record:
-[duynhlab/homelab `docs/proposals/rfc/RFC-0021/`](https://github.com/duynhlab/homelab/tree/main/docs/proposals/rfc/RFC-0021).
+- **Owns:** stock balances, reservations and their lifecycle, and every physical
+  or reserved change as a ledger movement.
+- **Does not own:** the product catalog or prices (`product-service`), order
+  status (`order-service`), or the decision to buy (`checkout-service`).
 
-## gRPC
+Since RFC-0021 phase 4 there is no alternative stock surface to fall back to —
+product's stock RPCs, read fields and schema are gone. That is deliberate, and it
+is why callers fail closed rather than guessing.
 
-- Listen address: `:9090` (`GRPC_PORT`, default `9090`)
-- Service: `inventory.v1.InventoryService` (proto from `github.com/duynhlab/pkg/proto/inventory/v1`)
-- Bootstrap via shared `github.com/duynhlab/pkg/grpcx` (`grpcx.NewServer`): OpenTelemetry interceptors, health, reflection
-- All RPCs (`BatchGetAvailability`, `CheckAvailability`, `Reserve`, `Release`, `Commit`, `GetReservation`) currently return `Unimplemented`
+## Tech
 
-There are no business HTTP routes: inventory is gRPC-only east-west.
-Operational endpoints: `GET /health`, `GET /ready` (DB ping + drain-aware).
+| Area | Technology |
+|------|------------|
+| Runtime | Go 1.26 |
+| Transports | gRPC (the only business API) · HTTP for `/health` and `/ready` only |
+| Data | PostgreSQL |
+| Platform libraries | `dbx`, `grpcx`, `logger/zapx`, `migratex`, `obsx`, `proto` |
 
-## Development
+This service is the one that imports **no `httpx`** — it serves no business HTTP,
+so it needs no shared HTTP envelope.
+
+## API
+
+- **Canonical contract:** [`homelab/docs/api/inventory.md`](https://github.com/duynhlab/homelab/blob/main/docs/api/inventory.md)
+- **Shared conventions:** [`homelab/docs/api/api.md`](https://github.com/duynhlab/homelab/blob/main/docs/api/api.md)
+- **Surfaces:** `inventory.v1.InventoryService` on `:9090`, called east-west by the
+  order saga, checkout, and product's `/details`. No Kong route and no public
+  edge — the service is NetworkPolicy-fenced. HTTP `:8080` carries only the
+  probes.
+
+Routes, RPC semantics, payloads and error reasons live in the contract. They are
+not repeated here, so there is one place to change when they change.
+
+## Run locally
+
+Prefer the homelab **local-stack** for anything cross-service — inventory is only
+interesting when a caller is reserving against it.
+
+Standalone, you need PostgreSQL reachable via the `DB_*` variables plus
+`SERVICE_NAME=inventory`:
 
 ```bash
-# Build
-GOTOOLCHAIN=auto go build ./...
-
-# Test
-GOTOOLCHAIN=auto go test ./...
-
-# Lint (must pass before PR merge)
-golangci-lint run --timeout=10m
-
-# Run locally (requires .env or env vars; DB_* + SERVICE_NAME=inventory)
-go run cmd/main.go
-
-# Apply schema migrations / dev-only demo seed
-go run cmd/main.go migrate
-go run cmd/main.go seed
+go run cmd/main.go migrate   # apply schema migrations
+go run cmd/main.go seed      # demo data — development only, refuses anything else
+go run cmd/main.go           # serve gRPC :9090 + probes :8080
 ```
 
-### The `backfill` subcommand was retired (RFC-0021 phase 4)
+`backfill` is retired and now exits with an explanatory error. See
+[AGENTS.md](./AGENTS.md) for why the arm still exists.
 
-Phase 2 shipped a one-shot `backfill` subcommand that copied
-`products.stock_quantity` into `inventory_balances` at the drained write cutover.
-**Phase 4 removed it**, because phase 4 removed both things it depended on:
+## Verify
 
-- product migration `000006` **drops** `products.stock_quantity` — the column had
-  been frozen since the write cutover, so it was a stale snapshot, not a source of
-  truth;
-- the cross-service read-only grant that let inventory reach the product database
-  (product migration `000005`, plus the `pg_hba` entry in homelab) is **revoked**.
+The commands CI runs, so a green local run means a green pipeline:
 
-Keeping the subcommand would have left a tool that cannot connect, reading a column
-that does not exist — and a `PRODUCT_DB_*` credential surface in this service's
-config for no remaining purpose. Its output survives where it matters: the opening
-`RECEIVE` movements it wrote are still in `inventory_movements`, so the ledger
-records where today's balances came from.
+```bash
+go build ./...
+go test -race ./...
+go test -tags=integration ./internal/core/repository/...   # needs Docker (testcontainers)
+golangci-lint run
+```
 
-**Recovering a missing balance now** is inventory-local, and deliberately so:
+## Docs
 
-1. Dev/demo → `go run cmd/main.go seed` (seeds `inventory_balances`).
-2. Real correction → an explicit `RECEIVE` movement through the normal write path,
-   which keeps the append-only invariant `on_hand == SUM(on_hand_delta)`.
-
-Never reconstruct balances from product: since the write cutover, product's numbers
-have not moved, so copying them back would overwrite live stock with a snapshot of
-whatever was true on cutover day.
+- [Canonical contract](https://github.com/duynhlab/homelab/blob/main/docs/api/inventory.md)
+- [local-stack guide](https://github.com/duynhlab/homelab/blob/main/local-stack/README.md)
+- [RFC-0021](https://github.com/duynhlab/homelab/tree/main/docs/proposals/rfc/RFC-0021) — why inventory owns stock, and the phased cutover that retired the product-owned surface
 
 ## License
 
