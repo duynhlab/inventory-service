@@ -293,3 +293,78 @@ func TestInternalErrorLeaksNothing(t *testing.T) {
 		t.Fatalf("internal detail leaked: %s", w.Body.String())
 	}
 }
+
+func TestListMovements(t *testing.T) {
+	logic := &fakeLogic{
+		movements: []domain.MovementView{{
+			ID: 9, CommandID: "c1", SKUID: "SKU-1", WarehouseID: 1, Type: "RECEIVE",
+			OnHandDelta: 7, Reason: "PO-1", Actor: "a11ce000-0000-4000-8000-000000000001",
+			CreatedAt: "2026-08-13T00:00:00Z",
+		}},
+		moveTotal: 1,
+	}
+	r := operatorRouter(t, logic)
+
+	w := do(r, http.MethodGet, "/inventory/v1/protected/movements?page=1&page_size=10&sku_id=SKU-1", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if logic.limit != 10 || logic.offset != 0 {
+		t.Fatalf("paging: want limit 10 offset 0, got %d/%d", logic.limit, logic.offset)
+	}
+	body := w.Body.String()
+	for _, want := range []string{`"type":"RECEIVE"`, `"actor":"a11ce000-0000-4000-8000-000000000001"`, `"on_hand_delta":7`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("payload missing %s: %s", want, body)
+		}
+	}
+
+	if w := do(r, http.MethodGet, "/inventory/v1/protected/movements?warehouse_id=zero", ""); w.Code != http.StatusBadRequest {
+		t.Fatalf("bad warehouse: want 400, got %d", w.Code)
+	}
+}
+
+func TestSKUBalancesFound(t *testing.T) {
+	logic := &fakeLogic{skuItems: []domain.BalanceView{{SKUID: "SKU-1", WarehouseID: 1, ATP: 5}}}
+	r := operatorRouter(t, logic)
+	w := do(r, http.MethodGet, "/inventory/v1/protected/balances/SKU-1", "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"atp":5`) {
+		t.Fatalf("want 200 with atp, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestMissingSubjectFailsClosed(t *testing.T) {
+	// The auth middleware sets roles but no subject — a wiring bug must be a
+	// 401, never a command with an empty actor.
+	logic := &fakeLogic{applied: true}
+	r := setup(t, logic,
+		func(c *gin.Context) { c.Set(authmw.CtxRoles, []string{backofficeRole}); c.Next() },
+		authmw.MiddlewareRequireRole(backofficeRole))
+	w := do(r, http.MethodPost, "/inventory/v1/protected/receipts",
+		`{"command_id":"c","sku_id":"S","warehouse_id":1,"quantity":1}`)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", w.Code)
+	}
+	if logic.gotCmd.CommandID != "" {
+		t.Fatalf("logic must not be called without a verified subject")
+	}
+}
+
+func TestRegisterRoutesWiresTheRealChain(t *testing.T) {
+	// The production wiring: a real verifier + the real role gate. No token on
+	// the wire, so the JWT middleware itself must reject with 401.
+	verifier, err := authmw.NewVerifier(authmw.Config{
+		Issuer:   "http://localhost:8081/realms/duynhlab",
+		Audience: "duynhlab-platform",
+	})
+	if err != nil {
+		t.Fatalf("verifier: %v", err)
+	}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	RegisterRoutes(r, NewHandler(&fakeLogic{}), verifier)
+	w := do(r, http.MethodGet, "/inventory/v1/protected/balances", "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("tokenless: want 401 from the real chain, got %d", w.Code)
+	}
+}

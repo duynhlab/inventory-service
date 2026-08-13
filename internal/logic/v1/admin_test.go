@@ -85,3 +85,71 @@ func TestAdminCommandOutcomes(t *testing.T) {
 		})
 	}
 }
+
+// fakeReader scripts the AdminReader port.
+type fakeReader struct {
+	balances     []domain.BalanceView
+	movements    []domain.MovementView
+	reservations []domain.ReservationView
+	total        int
+	err          error
+}
+
+func (f *fakeReader) ListBalances(_ context.Context, _ domain.BalanceFilter, _, _ int) ([]domain.BalanceView, int, error) {
+	return f.balances, f.total, f.err
+}
+
+func (f *fakeReader) SKUBalances(_ context.Context, _ string) ([]domain.BalanceView, error) {
+	return f.balances, f.err
+}
+
+func (f *fakeReader) ListMovements(_ context.Context, _ domain.MovementFilter, _, _ int) ([]domain.MovementView, int, error) {
+	return f.movements, f.total, f.err
+}
+
+func (f *fakeReader) ListReservations(_ context.Context, _ string, _, _ int) ([]domain.ReservationView, int, error) {
+	return f.reservations, f.total, f.err
+}
+
+func TestAdminReadsPassThrough(t *testing.T) {
+	reader := &fakeReader{
+		balances:     []domain.BalanceView{{SKUID: "S", ATP: 3}},
+		movements:    []domain.MovementView{{ID: 1, Type: "RECEIVE"}},
+		reservations: []domain.ReservationView{{ID: "r1", Status: "reserved"}},
+		total:        7,
+	}
+	svc := NewAdminService(reader, nil)
+	ctx := context.Background()
+
+	if items, total, err := svc.ListBalances(ctx, domain.BalanceFilter{}, 20, 0); err != nil || total != 7 || len(items) != 1 {
+		t.Fatalf("ListBalances = (%d, %d, %v)", len(items), total, err)
+	}
+	if items, err := svc.SKUBalances(ctx, "S"); err != nil || len(items) != 1 {
+		t.Fatalf("SKUBalances = (%d, %v)", len(items), err)
+	}
+	if items, total, err := svc.ListMovements(ctx, domain.MovementFilter{}, 20, 0); err != nil || total != 7 || len(items) != 1 {
+		t.Fatalf("ListMovements = (%d, %d, %v)", len(items), total, err)
+	}
+	if items, total, err := svc.ListReservations(ctx, "", 20, 0); err != nil || total != 7 || len(items) != 1 {
+		t.Fatalf("ListReservations = (%d, %d, %v)", len(items), total, err)
+	}
+}
+
+func TestAdminReadsWrapErrors(t *testing.T) {
+	sentinel := errors.New("pg down")
+	svc := NewAdminService(&fakeReader{err: sentinel}, nil)
+	ctx := context.Background()
+
+	if _, _, err := svc.ListBalances(ctx, domain.BalanceFilter{}, 20, 0); !errors.Is(err, sentinel) {
+		t.Fatalf("ListBalances error not preserved: %v", err)
+	}
+	if _, err := svc.SKUBalances(ctx, "S"); !errors.Is(err, sentinel) {
+		t.Fatalf("SKUBalances error not preserved: %v", err)
+	}
+	if _, _, err := svc.ListMovements(ctx, domain.MovementFilter{}, 20, 0); !errors.Is(err, sentinel) {
+		t.Fatalf("ListMovements error not preserved: %v", err)
+	}
+	if _, _, err := svc.ListReservations(ctx, "", 20, 0); !errors.Is(err, sentinel) {
+		t.Fatalf("ListReservations error not preserved: %v", err)
+	}
+}
