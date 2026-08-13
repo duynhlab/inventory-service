@@ -140,13 +140,14 @@ func main() {
 	grpcSrv, healthSrv := startGRPC(cfg, logger, availabilitySvc, reservationSvc)
 
 	// Protected Backoffice surface (RFC-0023 slice A): the service's first
-	// HTTP business routes, verified in-service against the realm (RFC-0022)
-	// and role-gated — the edge's JWT check is coarse, this one is
-	// authoritative (ADR-047).
+	// HTTP business routes, verified in-service and role-gated — the edge's
+	// JWT check is coarse, this one is authoritative (ADR-047). ADR-050: the
+	// verifier trusts the STAFF realm; a customer-realm token fails here (and
+	// at the edge) as wrong-issuer before any role logic.
 	verifier, err := authmw.NewVerifier(authmw.Config{
-		Issuer:   cfg.OIDCIssuer,
+		Issuer:   cfg.OIDCStaffIssuer,
 		Audience: cfg.OIDCAudience,
-		JWKSURL:  cfg.OIDCJWKSURL,
+		JWKSURL:  cfg.OIDCStaffJWKSURL,
 	})
 	if err != nil {
 		logger.Fatal("JWKS verifier init failed", zap.Error(err))
