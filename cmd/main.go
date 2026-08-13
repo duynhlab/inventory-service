@@ -31,7 +31,9 @@ import (
 	"github.com/duynhlab/inventory-service/internal/core/repository"
 	grpcv1 "github.com/duynhlab/inventory-service/internal/grpc/v1"
 	logicv1 "github.com/duynhlab/inventory-service/internal/logic/v1"
+	webv1 "github.com/duynhlab/inventory-service/internal/web/v1"
 	"github.com/duynhlab/inventory-service/middleware"
+	"github.com/duynhlab/pkg/authmw"
 	"github.com/duynhlab/pkg/grpcx"
 	"github.com/duynhlab/pkg/logger/zapx"
 	"github.com/duynhlab/pkg/migratex"
@@ -137,8 +139,25 @@ func main() {
 	reservationSvc := logicv1.NewReservationService(repository.NewReservationRepository(pool), logicv1.WithLogger(logger))
 	grpcSrv, healthSrv := startGRPC(cfg, logger, availabilitySvc, reservationSvc)
 
+	// Protected Backoffice surface (RFC-0023 slice A): the service's first
+	// HTTP business routes, verified in-service against the realm (RFC-0022)
+	// and role-gated — the edge's JWT check is coarse, this one is
+	// authoritative (ADR-047).
+	verifier, err := authmw.NewVerifier(authmw.Config{
+		Issuer:   cfg.OIDCIssuer,
+		Audience: cfg.OIDCAudience,
+		JWKSURL:  cfg.OIDCJWKSURL,
+	})
+	if err != nil {
+		logger.Fatal("JWKS verifier init failed", zap.Error(err))
+	}
+	adminHandler := webv1.NewHandler(logicv1.NewAdminService(
+		repository.NewAdminReadRepository(pool),
+		repository.NewStockCommandRepository(pool),
+	))
+
 	var isShuttingDown atomic.Bool
-	srv := setupServer(cfg, &isShuttingDown, pool)
+	srv := setupServer(cfg, &isShuttingDown, pool, adminHandler, verifier)
 	runGracefulShutdown(cfg, srv, grpcSrv, healthSrv, tp, pool, logger, &isShuttingDown)
 }
 
@@ -277,7 +296,7 @@ func startGRPC(
 
 func setupServer(cfg *config.Config, isShuttingDown *atomic.Bool, pool interface {
 	Ping(context.Context) error
-}) *http.Server {
+}, adminHandler *webv1.Handler, verifier *authmw.Verifier) *http.Server {
 	// Gin defaults to debug mode; anything but development runs release mode
 	// so per-route debug banners stay out of production logs.
 	if !cfg.IsDevelopment() {
@@ -302,8 +321,10 @@ func setupServer(cfg *config.Config, isShuttingDown *atomic.Bool, pool interface
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	// No business HTTP routes: inventory is gRPC-only east-west (RFC-0021);
-	// the full InventoryService surface is served on the gRPC port.
+	// East-west stays gRPC-only (RFC-0021). The single HTTP business surface
+	// is the protected Backoffice group (RFC-0023) — operator traffic through
+	// the edge, never service-to-service.
+	webv1.RegisterRoutes(r, adminHandler, verifier)
 
 	return &http.Server{
 		Addr:              ":" + cfg.Service.Port,

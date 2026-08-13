@@ -45,6 +45,13 @@ type Config struct {
 	Logging         LoggingConfig   // Structured logging (Zap)
 	Database        DatabaseConfig  // PostgreSQL database configuration
 	ShutdownTimeout int             // Graceful shutdown timeout in seconds - from SHUTDOWN_TIMEOUT env (default: 10)
+
+	// OIDC verification for the protected web surface (RFC-0023): the realm
+	// issuer the fleet trusts (RFC-0022/0024). Mirrors payment-service's env
+	// contract exactly — OIDC_ISSUER / OIDC_AUDIENCE / OIDC_JWKS_URL.
+	OIDCIssuer   string // Expected OIDC issuer (iss, exact match) - from OIDC_ISSUER env
+	OIDCAudience string // Expected OIDC audience (aud containment) - from OIDC_AUDIENCE env
+	OIDCJWKSURL  string // Optional JWKS endpoint override - from OIDC_JWKS_URL env (empty = derived from issuer)
 	// ReadinessDrainDelay: delay after failing readiness before shutting down the HTTP server.
 	// This gives Kubernetes/Service routing time to stop sending new traffic.
 	// From READINESS_DRAIN_DELAY env (default: 5s, max: 30s).
@@ -155,6 +162,9 @@ func Load() *Config {
 		},
 		ShutdownTimeout:     getEnvDurationSeconds("SHUTDOWN_TIMEOUT", 10),
 		ReadinessDrainDelay: getEnvDurationSecondsWithMax("READINESS_DRAIN_DELAY", 5, 30),
+		OIDCIssuer:          getEnv("OIDC_ISSUER", "https://id.duynh.me/realms/duynhlab"),
+		OIDCAudience:        getEnv("OIDC_AUDIENCE", "duynhlab-platform"),
+		OIDCJWKSURL:         getEnv("OIDC_JWKS_URL", ""),
 	}
 }
 
