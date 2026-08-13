@@ -235,8 +235,8 @@ func TestReceiveStockReplayIs200(t *testing.T) {
 func TestReceiveStockValidation(t *testing.T) {
 	r := operatorRouter(t, &fakeLogic{})
 	cases := []string{
-		`{"sku_id":"SKU-1","warehouse_id":1,"quantity":5}`,             // no command_id
-		`{"command_id":"c","sku_id":"SKU-1","warehouse_id":1}`,         // no quantity
+		`{"sku_id":"SKU-1","warehouse_id":1,"quantity":5}`,               // no command_id
+		`{"command_id":"c","sku_id":"SKU-1","warehouse_id":1}`,           // no quantity
 		`{"command_id":"c","sku_id":"S","warehouse_id":1,"quantity":-2}`, // negative
 	}
 	for _, body := range cases {
