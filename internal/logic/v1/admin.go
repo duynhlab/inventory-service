@@ -137,7 +137,7 @@ func (s *AdminService) runCommand(
 
 	if err := cmd.Validate(); err != nil {
 		recordAdminCommand(ctx, operation, cmdOutcomeRejected)
-		return false, fmt.Errorf("%w: %s", domain.ErrInvalidCommand, err)
+		return false, fmt.Errorf("%w: %w", domain.ErrInvalidCommand, err)
 	}
 
 	applied, err := run(ctx, cmd)
