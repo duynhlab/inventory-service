@@ -46,12 +46,14 @@ type Config struct {
 	Database        DatabaseConfig  // PostgreSQL database configuration
 	ShutdownTimeout int             // Graceful shutdown timeout in seconds - from SHUTDOWN_TIMEOUT env (default: 10)
 
-	// OIDC verification for the protected web surface (RFC-0023): the realm
-	// issuer the fleet trusts (RFC-0022/0024). Mirrors payment-service's env
-	// contract exactly — OIDC_ISSUER / OIDC_AUDIENCE / OIDC_JWKS_URL.
-	OIDCIssuer   string // Expected OIDC issuer (iss, exact match) - from OIDC_ISSUER env
-	OIDCAudience string // Expected OIDC audience (aud containment) - from OIDC_AUDIENCE env
-	OIDCJWKSURL  string // Optional JWKS endpoint override - from OIDC_JWKS_URL env (empty = derived from issuer)
+	// OIDC verification for the protected web surface (RFC-0023). ADR-050:
+	// operators live in the WORKFORCE realm (duynhlab-staff), so the protected
+	// group verifies the staff issuer — not the customer realm the rest of the
+	// fleet's private routes trust. OIDC_AUDIENCE stays shared (the audience
+	// names the platform; the issuer names the population).
+	OIDCStaffIssuer  string // Expected OIDC issuer (iss, exact match) - from OIDC_STAFF_ISSUER env
+	OIDCAudience     string // Expected OIDC audience (aud containment) - from OIDC_AUDIENCE env
+	OIDCStaffJWKSURL string // Optional JWKS endpoint override - from OIDC_STAFF_JWKS_URL env (empty = derived from issuer)
 	// ReadinessDrainDelay: delay after failing readiness before shutting down the HTTP server.
 	// This gives Kubernetes/Service routing time to stop sending new traffic.
 	// From READINESS_DRAIN_DELAY env (default: 5s, max: 30s).
@@ -162,9 +164,9 @@ func Load() *Config {
 		},
 		ShutdownTimeout:     getEnvDurationSeconds("SHUTDOWN_TIMEOUT", 10),
 		ReadinessDrainDelay: getEnvDurationSecondsWithMax("READINESS_DRAIN_DELAY", 5, 30),
-		OIDCIssuer:          getEnv("OIDC_ISSUER", "https://id.duynh.me/realms/duynhlab"),
+		OIDCStaffIssuer:     getEnv("OIDC_STAFF_ISSUER", "https://id.duynh.me/realms/duynhlab-staff"),
 		OIDCAudience:        getEnv("OIDC_AUDIENCE", "duynhlab-platform"),
-		OIDCJWKSURL:         getEnv("OIDC_JWKS_URL", ""),
+		OIDCStaffJWKSURL:    getEnv("OIDC_STAFF_JWKS_URL", ""),
 	}
 }
 
