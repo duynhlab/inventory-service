@@ -8,8 +8,16 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/duynhlab/inventory-service/middleware"
+	"github.com/duynhlab/pkg/obsx"
 )
+
+// tracerScope names the instrumentation scope for logic spans. It is static on
+// purpose: the scope says which code created the span, while the deployment
+// identity (service.name) comes from the OTel resource that
+// obsx.SetupObservability builds from OTEL_SERVICE_NAME and is stamped on every
+// span regardless. The value matches that env var today, so the scope recorded
+// here is unchanged from the package-level variable this replaced.
+const tracerScope = "inventory"
 
 // Span attribute keys and the fixed layer value. Kept as constants so the
 // literals live in one place (goconst) and every logic span is stamped
@@ -38,7 +46,7 @@ const (
 // out of spans too. The returned context parents the repository's dbx/otelpgx
 // spans under this one.
 func startLogicSpan(ctx context.Context, operation string) (context.Context, trace.Span) {
-	return middleware.StartSpan(ctx, "inventory."+operation, trace.WithAttributes(
+	return obsx.StartSpan(ctx, tracerScope, "inventory."+operation, trace.WithAttributes(
 		attribute.String(attrLayer, layerLogic),
 		attribute.String(attrOperation, operation),
 	))
@@ -46,7 +54,7 @@ func startLogicSpan(ctx context.Context, operation string) (context.Context, tra
 
 // setSpanOutcome stamps the bounded outcome on the current logic span.
 func setSpanOutcome(ctx context.Context, outcome string) {
-	middleware.AddSpanAttributes(ctx, attribute.String(attrOutcome, outcome))
+	obsx.AddSpanAttributes(ctx, attribute.String(attrOutcome, outcome))
 }
 
 // recordSpanError stamps the error outcome and records a BOUNDED infra failure

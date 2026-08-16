@@ -32,7 +32,6 @@ import (
 	grpcv1 "github.com/duynhlab/inventory-service/internal/grpc/v1"
 	logicv1 "github.com/duynhlab/inventory-service/internal/logic/v1"
 	webv1 "github.com/duynhlab/inventory-service/internal/web/v1"
-	"github.com/duynhlab/inventory-service/middleware"
 	"github.com/duynhlab/pkg/authmw"
 	"github.com/duynhlab/pkg/grpcx"
 	"github.com/duynhlab/pkg/logger/zapx"
@@ -89,7 +88,6 @@ func main() {
 	// logs behind OTEL_LOGS_ENABLED. The config is built once so the startup
 	// log reflects the values obsx actually uses.
 	otelCfg := obsx.ConfigFromEnv()
-	middleware.SetServiceName(otelCfg.ServiceName)
 	var tp interface{ Shutdown(context.Context) error }
 	obs, err := obsx.SetupObservability(context.Background(), otelCfg)
 	if err != nil {

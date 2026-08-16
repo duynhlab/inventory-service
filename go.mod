@@ -3,11 +3,13 @@ module github.com/duynhlab/inventory-service
 go 1.26.2
 
 require (
+	github.com/duynhlab/pkg/authmw v0.37.1
 	github.com/duynhlab/pkg/dbx v0.36.1
 	github.com/duynhlab/pkg/grpcx v0.36.1
+	github.com/duynhlab/pkg/httpx v0.36.1
 	github.com/duynhlab/pkg/logger/zapx v0.36.0
 	github.com/duynhlab/pkg/migratex v0.36.1
-	github.com/duynhlab/pkg/obsx v0.36.1
+	github.com/duynhlab/pkg/obsx v0.37.0
 	github.com/duynhlab/pkg/proto v0.37.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/jackc/pgx/v5 v5.10.0
@@ -45,8 +47,6 @@ require (
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
-	github.com/duynhlab/pkg/authmw v0.37.1 // indirect
-	github.com/duynhlab/pkg/httpx v0.36.1 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/exaring/otelpgx v0.11.1 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
