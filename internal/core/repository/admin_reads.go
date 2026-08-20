@@ -28,7 +28,8 @@ func NewAdminReadRepository(pool *pgxpool.Pool) *AdminReadRepository {
 // listTotal runs the shared count query for a WHERE clause built by a lister.
 func (r *AdminReadRepository) listTotal(ctx context.Context, table, where string, args []any) (int, error) {
 	var total int
-	//nolint:gosec // table and where are compile-time constants assembled below
+	// table and where are compile-time constants assembled below; the caller's
+	// values ride in args, never in the string.
 	err := r.pool.QueryRow(ctx, "SELECT count(*) FROM "+table+where, args...).Scan(&total)
 	if err != nil {
 		return 0, fmt.Errorf("count %s: %w", table, err)

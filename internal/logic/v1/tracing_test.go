@@ -35,7 +35,7 @@ func lastSpan(t *testing.T, name string) sdktrace.ReadOnlySpan {
 func spanAttrs(s sdktrace.ReadOnlySpan) map[string]string {
 	m := make(map[string]string, len(s.Attributes()))
 	for _, kv := range s.Attributes() {
-		m[string(kv.Key)] = kv.Value.Emit()
+		m[string(kv.Key)] = kv.Value.String()
 	}
 	return m
 }
@@ -51,7 +51,7 @@ func exceptionMessages(s sdktrace.ReadOnlySpan) []string {
 		}
 		for _, kv := range ev.Attributes {
 			if string(kv.Key) == "exception.message" {
-				msgs = append(msgs, kv.Value.Emit())
+				msgs = append(msgs, kv.Value.String())
 			}
 		}
 	}
@@ -187,7 +187,7 @@ func TestSpanErrorChannel_NoRawErrorLeak(t *testing.T) {
 	texts := append([]string{span.Status().Description}, exceptionMessages(span)...)
 	for _, ev := range span.Events() {
 		for _, kv := range ev.Attributes {
-			texts = append(texts, kv.Value.Emit())
+			texts = append(texts, kv.Value.String())
 		}
 	}
 	for _, bad := range []string{"sku-ABC", "warehouse-7", "res-XYZ", "SQLSTATE", "deadlock"} {
