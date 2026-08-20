@@ -1,11 +1,14 @@
-FROM docker.io/library/golang:1.26.6-alpine AS builder
+# --platform pins the builder to the BUILD host so a multi-arch build
+# cross-compiles instead of running this whole stage under emulation.
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.26.6-alpine AS builder
+ARG TARGETOS TARGETARCH
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 # Build the whole cmd package (not just main.go): cmd/ has sibling files that
 # main.go's subcommand dispatch depends on.
-RUN CGO_ENABLED=0 GOOS=linux go build -o /app/inventory-service ./cmd
+RUN CGO_ENABLED=0 GOOS="${TARGETOS:-linux}" GOARCH="${TARGETARCH}" go build -o /app/inventory-service ./cmd
 
 FROM alpine:3.22
 RUN apk upgrade --no-cache && apk --no-cache add ca-certificates \
