@@ -106,9 +106,9 @@ func main() {
 			return zapcore.NewTee(c, obs.ZapCore(otelCfg.ServiceName, minLevel))
 		}))
 		logger.Info("OpenTelemetry initialized",
-			zap.Bool("traces", obs.TracerProvider != nil),
-			zap.Bool("otlp_metrics", obs.MeterProvider != nil),
-			zap.Bool("otlp_logs", obs.LoggerProvider != nil),
+			zap.Bool("traces", obs.Enabled().Traces),
+			zap.Bool("otlp_metrics", obs.Enabled().Metrics),
+			zap.Bool("otlp_logs", obs.Enabled().Logs),
 			zap.String("endpoint", otelCfg.Endpoint),
 			zap.Float64("sample_rate", otelCfg.SampleRate),
 		)
