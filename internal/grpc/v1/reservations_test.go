@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -49,7 +48,7 @@ func (s *reservationsStub) GetReservation(_ context.Context, _ string) (domain.R
 }
 
 func newReservationServer(stub *reservationsStub) *Server {
-	return NewServer(nil, stub, zap.NewNop())
+	return NewServer(nil, stub)
 }
 
 func reserveRequest() *inventoryv1.ReserveRequest {

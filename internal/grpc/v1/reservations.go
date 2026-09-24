@@ -65,7 +65,7 @@ func (s *Server) Reserve(
 		ExpiresAt:         req.GetExpiresAt(),
 	})
 	if err != nil {
-		return nil, s.reservationError("Reserve", err)
+		return nil, s.reservationError(ctx, "Reserve", err)
 	}
 	allocations := make([]*inventoryv1.Allocation, 0, len(res.Allocations))
 	for _, a := range res.Allocations {
@@ -96,7 +96,7 @@ func (s *Server) Release(
 	}
 	status, err := s.reservations.Release(ctx, req.GetReservationId(), req.GetReason())
 	if err != nil {
-		return nil, s.reservationError("Release", err)
+		return nil, s.reservationError(ctx, "Release", err)
 	}
 	return &inventoryv1.ReleaseResponse{
 		ReservationId: req.GetReservationId(),
@@ -114,7 +114,7 @@ func (s *Server) Commit(
 	}
 	status, err := s.reservations.Commit(ctx, req.GetReservationId())
 	if err != nil {
-		return nil, s.reservationError("Commit", err)
+		return nil, s.reservationError(ctx, "Commit", err)
 	}
 	return &inventoryv1.CommitResponse{
 		ReservationId: req.GetReservationId(),
@@ -133,7 +133,7 @@ func (s *Server) GetReservation(
 	}
 	res, err := s.reservations.GetReservation(ctx, req.GetReservationId())
 	if err != nil {
-		return nil, s.reservationError("GetReservation", err)
+		return nil, s.reservationError(ctx, "GetReservation", err)
 	}
 	allocations := make([]*inventoryv1.Allocation, 0, len(res.Allocations))
 	for _, a := range res.Allocations {
@@ -183,7 +183,7 @@ func reservationLines(items []*inventoryv1.ReservationItem) ([]domain.Line, erro
 // reservationError maps a domain failure onto the wire contract. Business
 // rejections carry their stable grpcx reason; anything unrecognized is a
 // storage failure and fails closed as retryable DEPENDENCY_UNAVAILABLE.
-func (s *Server) reservationError(rpc string, err error) error {
+func (s *Server) reservationError(ctx context.Context, rpc string, err error) error {
 	switch {
 	case errors.Is(err, domain.ErrUnknownSKU):
 		// Before ErrInsufficientStock arm-order matters conceptually, but the
@@ -208,7 +208,7 @@ func (s *Server) reservationError(rpc string, err error) error {
 		return grpcx.ErrorWithReason(codes.Aborted, grpcx.ReasonConcurrencyConflict,
 			"concurrent transaction conflict, retry", nil)
 	default:
-		return s.failClosed(rpc, err)
+		return s.failClosed(ctx, rpc, err)
 	}
 }
 
