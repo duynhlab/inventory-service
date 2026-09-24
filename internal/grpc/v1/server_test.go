@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"testing"
 
-	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -35,7 +34,7 @@ func (s *availabilityStub) CheckAvailability(_ context.Context, items []logicv1.
 }
 
 func newTestServer(stub *availabilityStub) *Server {
-	return NewServer(stub, nil, zap.NewNop())
+	return NewServer(stub, nil)
 }
 
 // wantValidationError asserts the grpcx VALIDATION_ERROR contract: callers

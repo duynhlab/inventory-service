@@ -11,13 +11,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
-	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	logicv1 "github.com/duynhlab/inventory-service/internal/logic/v1"
 	"github.com/duynhlab/pkg/grpcx"
+	"github.com/duynhlab/pkg/logger/slogx"
 	inventoryv1 "github.com/duynhlab/pkg/proto/inventory/v1"
 )
 
@@ -41,13 +42,12 @@ type Server struct {
 
 	availability Availability
 	reservations Reservations
-	logger       *zap.Logger
 }
 
 // NewServer creates the gRPC InventoryService server backed by the
 // availability and reservation logic services.
-func NewServer(availability Availability, reservations Reservations, logger *zap.Logger) *Server {
-	return &Server{availability: availability, reservations: reservations, logger: logger}
+func NewServer(availability Availability, reservations Reservations) *Server {
+	return &Server{availability: availability, reservations: reservations}
 }
 
 // failClosed translates a logic-layer failure into a wire status. The real
@@ -55,11 +55,11 @@ func NewServer(availability Availability, reservations Reservations, logger *zap
 // SQL or connection detail) — so operators keep the root cause without
 // leaking it to callers. A canceled request propagates as codes.Canceled
 // with no reason detail: the caller hung up; retry classification is theirs.
-func (s *Server) failClosed(rpc string, err error) error {
+func (s *Server) failClosed(ctx context.Context, rpc string, err error) error {
 	if errors.Is(err, context.Canceled) {
 		return status.Error(codes.Canceled, "request canceled")
 	}
-	s.logger.Error("Inventory RPC failed", zap.String("rpc", rpc), zap.Error(err))
+	slogx.FromContext(ctx).Error(ctx, "Inventory RPC failed", slog.String("rpc", rpc), slogx.Err(err))
 	// A storage failure is retryable for callers — never a business "no".
 	return grpcx.ErrorWithReason(codes.Unavailable, grpcx.ReasonDependencyUnavailable,
 		rpc+" failed", nil)
@@ -87,7 +87,7 @@ func (s *Server) BatchGetAvailability(
 
 	availabilities, err := s.availability.BatchGetAvailability(ctx, req.GetSkuIds())
 	if err != nil {
-		return nil, s.failClosed("BatchGetAvailability", err)
+		return nil, s.failClosed(ctx, "BatchGetAvailability", err)
 	}
 
 	out := make([]*inventoryv1.SkuAvailability, 0, len(availabilities))
@@ -139,7 +139,7 @@ func (s *Server) CheckAvailability(
 
 	result, err := s.availability.CheckAvailability(ctx, items)
 	if err != nil {
-		return nil, s.failClosed("CheckAvailability", err)
+		return nil, s.failClosed(ctx, "CheckAvailability", err)
 	}
 
 	shortages := make([]*inventoryv1.Shortage, 0, len(result.Shortages))

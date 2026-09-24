@@ -1,7 +1,9 @@
 package v1
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,9 +11,8 @@ import (
 
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-	"go.uber.org/zap/zaptest/observer"
+
+	"github.com/duynhlab/pkg/logger/slogx"
 
 	"github.com/duynhlab/inventory-service/internal/core/domain"
 )
@@ -274,38 +275,72 @@ func TestSpan_CanceledIsNotOurOutcome(t *testing.T) {
 	})
 }
 
+// captureLogger returns a context carrying a debug-level facade that writes
+// JSON lines into the returned buffer.
+func captureLogger(t *testing.T) (context.Context, *bytes.Buffer) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	l := slogx.New(slogx.Config{Level: "debug", Stdout: buf})
+	return slogx.WithContext(context.Background(), l), buf
+}
+
+func records(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("not JSON: %q", line)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
 // TestReservationOutcome_DebugLog proves the G2 diagnostic trail: each write
 // command logs its outcome at debug level with ONLY operation+outcome fields —
 // no ids, no PII — and a business "no" is not escalated above debug.
 func TestReservationOutcome_DebugLog(t *testing.T) {
-	core, logs := observer.New(zapcore.DebugLevel)
-	logger := zap.New(core)
+	ctx, buf := captureLogger(t)
 
-	svc := NewReservationService(&fakeReservationRepo{result: domain.ReservationResult{Status: domain.ReservationReserved}}, WithLogger(logger))
-	if _, err := svc.Reserve(context.Background(), domain.ReservationRequest{ID: "res-1", OrderID: "order-1"}); err != nil {
+	svc := NewReservationService(&fakeReservationRepo{result: domain.ReservationResult{Status: domain.ReservationReserved}})
+	if _, err := svc.Reserve(ctx, domain.ReservationRequest{ID: "res-1", OrderID: "order-1"}); err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	rej := NewReservationService(&fakeReservationRepo{err: &domain.InsufficientStockError{}}, WithLogger(logger))
-	if _, err := rej.Reserve(context.Background(), domain.ReservationRequest{ID: "res-1"}); err == nil {
+	rej := NewReservationService(&fakeReservationRepo{err: &domain.InsufficientStockError{}})
+	if _, err := rej.Reserve(ctx, domain.ReservationRequest{ID: "res-1"}); err == nil {
 		t.Fatal("want error")
 	}
 
-	entries := logs.FilterMessage("reservation outcome").All()
+	var entries []map[string]any
+	for _, r := range records(t, buf) {
+		if r["message"] == "reservation outcome" {
+			entries = append(entries, r)
+		}
+	}
 	if len(entries) != 2 {
 		t.Fatalf("got %d 'reservation outcome' logs, want 2", len(entries))
 	}
 
+	envelope := map[string]bool{"timestamp": true, "level": true, "message": true, "caller": true, "trace_id": true, "span_id": true}
 	wantOutcomes := map[string]bool{"ok": false, "insufficient": false}
 	for _, e := range entries {
-		if e.Level != zapcore.DebugLevel {
-			t.Errorf("log level = %v, want Debug (a business 'no' is not an operator error)", e.Level)
+		if e["level"] != "debug" {
+			t.Errorf("log level = %v, want debug (a business 'no' is not an operator error)", e["level"])
 		}
-		fields := e.ContextMap()
+		fields := map[string]any{}
+		for k, v := range e {
+			if !envelope[k] {
+				fields[k] = v
+			}
+		}
 		if len(fields) != 2 {
 			t.Errorf("log fields = %v, want exactly {operation, outcome} (no ids/PII)", fields)
 		}
-		op, _ := fields[attrOperation].(string)
-		if op != "reserve" {
+		if fields[attrOperation] != "reserve" {
 			t.Errorf("operation field = %v, want reserve", fields[attrOperation])
 		}
 		oc, _ := fields[attrOutcome].(string)
@@ -319,5 +354,48 @@ func TestReservationOutcome_DebugLog(t *testing.T) {
 		if !seen {
 			t.Errorf("missing debug log for outcome %q", oc)
 		}
+	}
+}
+
+// inventory.reservation.rejected fires for a stock refusal only — insufficient
+// or an untracked SKU — carrying the caller's reservation reference; a
+// success or a conflict writes no event.
+func TestReserve_RejectedEvent(t *testing.T) {
+	cases := []struct {
+		name    string
+		repoErr error
+		outcome string
+	}{
+		{"insufficient", &domain.InsufficientStockError{}, "insufficient"},
+		{"unknown sku", domain.ErrUnknownSKU, "unknown_sku"},
+		{"conflict writes nothing", domain.ErrIdempotencyConflict, ""},
+		{"success writes nothing", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, buf := captureLogger(t)
+			repo := &fakeReservationRepo{err: tc.repoErr, result: domain.ReservationResult{Status: domain.ReservationReserved}}
+			_, _ = NewReservationService(repo).Reserve(ctx, domain.ReservationRequest{ID: "res-42"})
+			var events []map[string]any
+			for _, r := range records(t, buf) {
+				if r["event"] != nil {
+					events = append(events, r)
+				}
+			}
+			if tc.outcome == "" {
+				if len(events) != 0 {
+					t.Fatalf("events = %v, want none", events)
+				}
+				return
+			}
+			if len(events) != 1 {
+				t.Fatalf("events = %d, want 1", len(events))
+			}
+			e := events[0]
+			if e["event"] != "inventory.reservation.rejected" || e["outcome"] != tc.outcome ||
+				e["inventory.reservation.ref"] != "res-42" || e["level"] != "info" {
+				t.Errorf("event = %v", e)
+			}
+		})
 	}
 }

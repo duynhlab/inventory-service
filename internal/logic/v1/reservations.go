@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-
-	"go.uber.org/zap"
+	"log/slog"
 
 	"github.com/duynhlab/inventory-service/internal/core/domain"
+	"github.com/duynhlab/pkg/logger/slogx"
 )
 
 // ReservationStore is the repository dependency of ReservationService.
@@ -23,27 +23,16 @@ type ReservationStore interface {
 // (RFC-0021 P1-5). It is thin orchestration: aggregation + metrics here, the
 // FSM and balance invariants in the repository transactions.
 type ReservationService struct {
-	repo   ReservationStore
-	logger *zap.Logger // outcome diagnostics; Nop unless WithLogger is set
+	repo ReservationStore
 }
 
 // ReservationOption configures an optional ReservationService capability.
 type ReservationOption func(*ReservationService)
 
-// WithLogger attaches a logger for debug-level business-outcome diagnostics.
-// Omit it (or pass nil) to keep the silent Nop default.
-func WithLogger(l *zap.Logger) ReservationOption {
-	return func(s *ReservationService) {
-		if l != nil {
-			s.logger = l
-		}
-	}
-}
-
-// NewReservationService creates the reservation logic service. It logs nothing
-// unless WithLogger is passed.
+// NewReservationService creates the reservation logic service. Diagnostics go
+// through the logging facade carried by the call's context.
 func NewReservationService(repo ReservationStore, opts ...ReservationOption) *ReservationService {
-	s := &ReservationService{repo: repo, logger: zap.NewNop()}
+	s := &ReservationService{repo: repo}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -62,6 +51,7 @@ func (s *ReservationService) Reserve(ctx context.Context, req domain.Reservation
 	res, err := s.repo.Reserve(ctx, req)
 	if err != nil {
 		s.finishFailure(ctx, opReserve, err)
+		logRejected(ctx, req.ID, failureOutcome(err))
 		return domain.ReservationResult{}, fmt.Errorf("reserve: %w", err)
 	}
 	outcome := outcomeOK
@@ -133,7 +123,7 @@ func (s *ReservationService) GetReservation(ctx context.Context, id string) (dom
 func (s *ReservationService) finishOK(ctx context.Context, operation, outcome string) {
 	recordReservation(ctx, operation, outcome)
 	setSpanOutcome(ctx, outcome)
-	s.logOutcome(operation, outcome)
+	logOutcome(ctx, operation, outcome)
 }
 
 // finishFailure records a failed reservation command onto its metric, span, and
@@ -156,17 +146,31 @@ func (s *ReservationService) finishFailure(ctx context.Context, operation string
 	if outcome == outcomeError {
 		recordBoundedSpanError(ctx, operation)
 	}
-	s.logOutcome(operation, outcome)
+	logOutcome(ctx, operation, outcome)
 }
 
 // logOutcome writes the debug-level diagnostic trail for one reservation
 // command. A business "no" (insufficient stock, conflict) is a normal outcome,
 // not an operator error, so it stays at debug. Fields are bounded to operation
 // and outcome — never sku/order/reservation ids or any PII.
-func (s *ReservationService) logOutcome(operation, outcome string) {
-	s.logger.Debug("reservation outcome",
-		zap.String(attrOperation, operation),
-		zap.String(attrOutcome, outcome))
+func logOutcome(ctx context.Context, operation, outcome string) {
+	slogx.FromContext(ctx).Debug(ctx, "reservation outcome",
+		slog.String(attrOperation, operation),
+		slog.String(attrOutcome, outcome))
+}
+
+// logRejected emits inventory.reservation.rejected (RFC-0031 event catalog)
+// when a reserve is refused for stock: insufficient, or a SKU inventory does
+// not track. Other failures (conflicts, infrastructure) are not rejections of
+// the request's content and write no event. The reference is the caller's
+// reservation id, a correlation-only field.
+func logRejected(ctx context.Context, ref, outcome string) {
+	if outcome != outcomeInsufficient && outcome != outcomeUnknownSKU {
+		return
+	}
+	slogx.FromContext(ctx).Event(ctx, slog.LevelInfo, "inventory.reservation.rejected", "reservation rejected",
+		slog.String("inventory.reservation.ref", ref),
+		slog.String(attrOutcome, outcome))
 }
 
 // failureOutcome maps a domain error onto its bounded outcome label.
