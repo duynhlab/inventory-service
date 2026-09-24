@@ -396,6 +396,13 @@ func TestReserve_RejectedEvent(t *testing.T) {
 				e["inventory.reservation.ref"] != "res-42" || e["level"] != "info" {
 				t.Errorf("event = %v", e)
 			}
+			// Exactly the catalog attributes: no order id, no error text.
+			envelope := map[string]bool{"timestamp": true, "level": true, "message": true, "caller": true, "trace_id": true, "span_id": true}
+			for k := range e {
+				if !envelope[k] && k != "event" && k != "outcome" && k != "inventory.reservation.ref" {
+					t.Errorf("unexpected attribute %q on the event", k)
+				}
+			}
 		})
 	}
 }

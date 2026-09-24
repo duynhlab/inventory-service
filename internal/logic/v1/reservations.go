@@ -26,17 +26,10 @@ type ReservationService struct {
 	repo ReservationStore
 }
 
-// ReservationOption configures an optional ReservationService capability.
-type ReservationOption func(*ReservationService)
-
 // NewReservationService creates the reservation logic service. Diagnostics go
 // through the logging facade carried by the call's context.
-func NewReservationService(repo ReservationStore, opts ...ReservationOption) *ReservationService {
-	s := &ReservationService{repo: repo}
-	for _, opt := range opts {
-		opt(s)
-	}
-	return s
+func NewReservationService(repo ReservationStore) *ReservationService {
+	return &ReservationService{repo: repo}
 }
 
 // Reserve places an all-or-nothing hold for req. Duplicate SKU lines are

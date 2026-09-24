@@ -33,6 +33,7 @@ import (
 	webv1 "github.com/duynhlab/inventory-service/internal/web/v1"
 	"github.com/duynhlab/pkg/authmw"
 	"github.com/duynhlab/pkg/grpcx"
+	"github.com/duynhlab/pkg/httpmw"
 	"github.com/duynhlab/pkg/logger/slogx"
 	"github.com/duynhlab/pkg/migratex"
 	"github.com/duynhlab/pkg/obsx"
@@ -146,7 +147,7 @@ func main() {
 	))
 
 	var isShuttingDown atomic.Bool
-	srv := setupServer(cfg, &isShuttingDown, pool, adminHandler, verifier)
+	srv := setupServer(cfg, logger, &isShuttingDown, pool, adminHandler, verifier)
 	runGracefulShutdown(cfg, srv, grpcSrv, healthSrv, tp, pool, logger, &isShuttingDown)
 }
 
@@ -285,7 +286,7 @@ func startGRPC(
 	return grpcSrv, healthSrv
 }
 
-func setupServer(cfg *config.Config, isShuttingDown *atomic.Bool, pool interface {
+func setupServer(cfg *config.Config, logger *slogx.Logger, isShuttingDown *atomic.Bool, pool interface {
 	Ping(context.Context) error
 }, adminHandler *webv1.Handler, verifier *authmw.Verifier) *http.Server {
 	// Gin defaults to debug mode; anything but development runs release mode
@@ -295,7 +296,11 @@ func setupServer(cfg *config.Config, isShuttingDown *atomic.Bool, pool interface
 	}
 	// gin.New, not gin.Default: Default installs gin's own logger and
 	// recovery, which print the raw path and client address past the facade.
+	// httpmw replaces both: the canonical access record and a structured
+	// panic record, answered as a 500.
 	r := gin.New()
+	r.Use(httpmw.Logging(logger.Slog()))
+	r.Use(httpmw.Recovery(logger.Slog()))
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
