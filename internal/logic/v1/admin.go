@@ -32,7 +32,8 @@ const (
 )
 
 var adminCommandCounter, _ = meter.Int64Counter("inventory.admin.command.total",
-	metric.WithDescription("Protected stock commands, split by operation and outcome"))
+	metric.WithDescription("Protected stock commands, split by operation and outcome"),
+	metric.WithUnit("{command}"))
 
 func recordAdminCommand(ctx context.Context, operation, outcome string) {
 	adminCommandCounter.Add(ctx, 1, metric.WithAttributes(
