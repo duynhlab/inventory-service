@@ -24,14 +24,16 @@ var (
 	meter = otel.Meter("inventory-service")
 
 	checkCounter, _ = meter.Int64Counter("inventory.check.total",
-		metric.WithDescription("Whole-basket availability checks, split by outcome"))
+		metric.WithDescription("Whole-basket availability checks, split by outcome"),
+		metric.WithUnit("{check}"))
 
 	// reservation.total answers the saga-side on-call questions: are holds
 	// failing on stock (insufficient), on retries (replayed/conflict), or on
 	// the database (error)? Labels are bounded to enumerable domain values
 	// (RFC-0017 D-9): operation and outcome only — no reservation or sku ids.
 	reservationCounter, _ = meter.Int64Counter("inventory.reservation.total",
-		metric.WithDescription("Reservation commands, split by operation and outcome"))
+		metric.WithDescription("Reservation commands, split by operation and outcome"),
+		metric.WithUnit("{reservation}"))
 )
 
 // Check outcomes (bounded).

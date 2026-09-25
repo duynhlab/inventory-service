@@ -59,7 +59,7 @@ func (s *Server) failClosed(ctx context.Context, rpc string, err error) error {
 	if errors.Is(err, context.Canceled) {
 		return status.Error(codes.Canceled, "request canceled")
 	}
-	slogx.FromContext(ctx).Error(ctx, "Inventory RPC failed", slog.String("rpc", rpc), slogx.Err(err))
+	slogx.FromContext(ctx).Error(ctx, "Inventory RPC failed", slog.String("rpc.method", rpc), slogx.Err(err))
 	// A storage failure is retryable for callers — never a business "no".
 	return grpcx.ErrorWithReason(codes.Unavailable, grpcx.ReasonDependencyUnavailable,
 		rpc+" failed", nil)
