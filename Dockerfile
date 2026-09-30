@@ -10,7 +10,7 @@ COPY . .
 # main.go's subcommand dispatch depends on.
 RUN CGO_ENABLED=0 GOOS="${TARGETOS:-linux}" GOARCH="${TARGETARCH}" go build -o /app/inventory-service ./cmd
 
-FROM alpine:3.22
+FROM alpine:3.24
 RUN apk upgrade --no-cache && apk --no-cache add ca-certificates \
     && adduser -D -u 65532 app
 WORKDIR /home/app/
