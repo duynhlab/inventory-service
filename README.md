@@ -20,7 +20,7 @@ callers fail closed rather than guessing.
 
 | Area | Technology |
 |------|------------|
-| Runtime | Go 1.26 |
+| Runtime | Go 1.27 |
 | Transports | gRPC (the only business API) · HTTP for `/health` and `/ready` only |
 | Data | PostgreSQL |
 | Platform libraries | `dbx`, `grpcx`, `logger/zapx`, `migratex`, `obsx`, `proto` |
