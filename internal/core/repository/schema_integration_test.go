@@ -13,12 +13,9 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	migrations "github.com/duynhlab/inventory-service/db/migrations"
 	"github.com/duynhlab/pkg/migratex"
@@ -28,22 +25,13 @@ func newTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
 
-	container, err := postgres.Run(ctx, "postgres:16-alpine",
+	container, err := postgres.Run(ctx, "postgres:18-alpine",
 		postgres.WithDatabase("inventory"),
 		postgres.WithUsername("inventory"),
 		postgres.WithPassword("secret"),
-		// The postgres image starts the server TWICE: once temporarily to run the
-		// init scripts that create this database and user, then it shuts that
-		// down and starts for real. Waiting only for the port to listen can
-		// therefore succeed against the temporary server, and the first query
-		// lands right as it shuts down — "connection reset by peer", seen in CI.
-		// Wait for the readiness line the SECOND time, which is the module's own
-		// default and the pattern order/checkout/payment/cart already use.
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(90*time.Second),
-		),
+		// Ready twice (initdb restarts the server once), then the published
+		// port: the module's own strategy, so a test never races the restart.
+		postgres.BasicWaitStrategies(),
 	)
 	if err != nil {
 		t.Fatalf("start postgres container: %v", err)
