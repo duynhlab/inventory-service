@@ -24,7 +24,17 @@ import (
 // statement_timeout raises 57014 (failed closed as DEPENDENCY_UNAVAILABLE) —
 // instead of piling connections up behind a stuck lock until the pool
 // starves. Migrations use the bare DSN and keep unlimited time.
+//
+// When DB_PASSWORD_FILE is set (ADR-025 pattern A), WithPasswordFile makes
+// dbx read the password from that mounted file on every new connection, so a
+// rotated password is used without a pod restart. The DSN password is then
+// ignored: a missing or empty file fails the connection instead of falling
+// back. dbx also caps connection lifetime at 30m (±3m) so the pool moves onto
+// a rotated password. An empty path is a no-op (DB_PASSWORD as before).
 func Connect(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	dsn := cfg.Database.BuildDSN() + "&lock_timeout=3s&statement_timeout=10s"
-	return dbx.NewPool(ctx, dsn, dbx.WithMaxConns(cfg.Database.MaxConnections))
+	return dbx.NewPool(ctx, dsn,
+		dbx.WithMaxConns(cfg.Database.MaxConnections),
+		dbx.WithPasswordFile(cfg.Database.PasswordFile),
+	)
 }
